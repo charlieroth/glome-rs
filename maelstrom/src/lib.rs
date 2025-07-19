@@ -27,6 +27,14 @@ pub enum Body {
     #[serde(rename = "echo_ok")]
     EchoOk(EchoOk),
 
+    /// Generate request
+    #[serde(rename = "generate")]
+    Generate(Generate),
+
+    /// Generate reply
+    #[serde(rename = "generate_ok")]
+    GenerateOk(GenerateOk),
+
     /// Standard error reply (definite or indefinite)
     #[serde(rename = "error")]
     Error(ErrorBody),
@@ -62,6 +70,18 @@ pub struct EchoOk {
     pub msg_id: u64,
     pub in_reply_to: u64,
     pub echo: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Generate {
+    pub msg_id: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GenerateOk {
+    pub msg_id: u64,
+    pub in_reply_to: u64,
+    pub id: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
