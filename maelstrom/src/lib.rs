@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -34,6 +36,30 @@ pub enum Body {
     /// Generate reply
     #[serde(rename = "generate_ok")]
     GenerateOk(GenerateOk),
+
+    /// Broadcast request
+    #[serde(rename = "broadcast")]
+    Broadcast(Broadcast),
+
+    /// Broadcast reply
+    #[serde(rename = "broadcast_ok")]
+    BroadcastOk(BroadcastOk),
+
+    /// Read request
+    #[serde(rename = "read")]
+    Read(Read),
+
+    /// Read reply
+    #[serde(rename = "read_ok")]
+    ReadOk(ReadOk),
+
+    /// Topology request
+    #[serde(rename = "topology")]
+    Topology(Topology),
+
+    /// Topology reply
+    #[serde(rename = "topology_ok")]
+    TopologyOk(TopologyOk),
 
     /// Standard error reply (definite or indefinite)
     #[serde(rename = "error")]
@@ -82,6 +108,42 @@ pub struct GenerateOk {
     pub msg_id: u64,
     pub in_reply_to: u64,
     pub id: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Broadcast {
+    pub msg_id: u64,
+    pub message: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BroadcastOk {
+    pub msg_id: u64,
+    pub in_reply_to: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Read {
+    pub msg_id: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ReadOk {
+    pub msg_id: u64,
+    pub in_reply_to: u64,
+    pub messages: Vec<u64>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Topology {
+    pub msg_id: u64,
+    pub topology: HashMap<String, Vec<String>>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TopologyOk {
+    pub msg_id: u64,
+    pub in_reply_to: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
