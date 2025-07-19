@@ -1,78 +1,78 @@
 use serde::{Deserialize, Serialize};
-
-pub struct Node {
-    pub node_id: String,
-    pub node_ids: Vec<String>,
-}
+use serde_json::Value;
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct InitMsgBody {
-    #[serde(rename = "type")]
-    pub msg_type: String,
-    pub msg_id: i64,
-    pub node_id: String,
-    pub node_ids: Vec<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct InitMsg {
+pub struct Envelope<T = Body> {
     pub src: String,
     pub dest: String,
-    pub body: InitMsgBody,
+    pub body: T,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct InitOkBody {
-    #[serde(rename = "type")]
-    pub msg_type: String,
-    pub in_reply_to: i64,
+#[serde(tag = "type")]
+pub enum Body {
+    /// Initialize request sent once to every node
+    #[serde(rename = "init")]
+    Init(Init),
+
+    /// Mandatory reply to `init`
+    #[serde(rename = "init_ok")]
+    InitOk(InitOk),
+
+    /// Echo request
+    #[serde(rename = "echo")]
+    Echo(Echo),
+
+    /// Echo reply
+    #[serde(rename = "echo_ok")]
+    EchoOk(EchoOk),
+
+    /// Standard error reply (definite or indefinite)
+    #[serde(rename = "error")]
+    Error(ErrorBody),
+
+    /// All other message-client workload RPCs, internal
+    /// gossip, ad-hoc extensions land here unchanged.
+    #[serde(other)]
+    Unknown,
+}
+
+/// Body of initilization message
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Init {
+    pub msg_id: u64,
+    pub node_id: String,
+    pub node_ids: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct InitOk {
-    pub src: String,
-    pub dest: String,
-    pub body: InitOkBody,
+    pub msg_id: u64,
+    pub in_reply_to: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct EchoMsgBody {
-    #[serde(rename = "type")]
-    pub msg_type: String,
-    pub msg_id: i64,
-    pub echo: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct EchoMsg {
-    pub src: String,
-    pub dest: String,
-    pub body: EchoMsgBody,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct EchoOkBody {
-    #[serde(rename = "type")]
-    pub msg_type: String,
-    pub msg_id: i64,
-    pub in_reply_to: i64,
+pub struct Echo {
+    pub msg_id: u64,
     pub echo: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct EchoOk {
-    pub src: String,
-    pub dest: String,
-    pub body: EchoOkBody,
+    pub msg_id: u64,
+    pub in_reply_to: u64,
+    pub echo: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct ErrorMsg {
-    #[serde(rename = "type")]
-    pub msg_type: String,
-    pub in_reply_to: i64,
+pub struct ErrorBody {
+    pub in_reply_to: u64,
     pub code: ErrorCode,
-    pub text: String,
+    /// Optional human-readable description
+    pub text: Option<String>,
+    /// Any additional fields for personal implementation
+    #[serde(flatten)]
+    pub extra: Option<Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
