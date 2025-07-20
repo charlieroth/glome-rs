@@ -1,13 +1,15 @@
-use maelstrom::{Body, Envelope, InitOk, TopologyOk};
-use std::time::Duration;
+use maelstrom::{
+    Body, CommitOffsetsOk, Envelope, InitOk, ListCommittedOffsetsOk, Log, LogEntry, PollOk, SendOk,
+    TopologyOk,
+};
 use tokio::io::{AsyncBufReadExt, BufReader, stdin};
 use tokio::sync::mpsc;
-use tokio::time::interval;
 
 pub struct Node {
     pub msg_id: u64,
     pub node_id: String,
     pub node_ids: Vec<String>,
+    pub log: Log,
     pub sender: mpsc::Sender<Envelope>,
     pub receiver: mpsc::Receiver<Envelope>,
 }
@@ -21,6 +23,7 @@ impl Node {
             msg_id: 0,
             node_id: String::new(),
             node_ids: Vec::new(),
+            log: Log::new(),
             receiver,
             sender,
         };
@@ -30,52 +33,110 @@ impl Node {
     }
 
     async fn run(&mut self) {
-        let mut gossip_timer = interval(Duration::from_millis(100));
-
         loop {
-            tokio::select! {
-                _ = gossip_timer.tick() => {
-                    // Implement gossip logic (if needed)
-                }
-                Some(env) = self.receiver.recv() => {
-                    match env.body {
-                        Body::Init(init) => {
-                            self.msg_id += 1;
-                            self.node_id = init.node_id;
-                            self.node_ids = init.node_ids;
+            while let Some(env) = self.receiver.recv().await {
+                match env.body {
+                    Body::Init(init) => {
+                        self.msg_id += 1;
+                        self.node_id = init.node_id;
+                        self.node_ids = init.node_ids;
 
-                            self.sender
-                                .send(Envelope {
-                                    src: self.node_id.clone(),
-                                    dest: env.src,
-                                    body: Body::InitOk(InitOk {
-                                        msg_id: self.msg_id,
-                                        in_reply_to: init.msg_id,
-                                    }),
-                                })
-                                .await
-                                .unwrap();
-                        }
-                        Body::Topology(topology) => {
-                            self.msg_id += 1;
-                            self.sender
-                                .send(Envelope {
-                                    src: self.node_id.clone(),
-                                    dest: env.src,
-                                    body: Body::TopologyOk(TopologyOk {
-                                        msg_id: self.msg_id,
-                                        in_reply_to: topology.msg_id,
-                                    }),
-                                })
-                                .await
-                                .unwrap();
-                        }
-                        // TODO: Handle additional messages
-                        msg => {
-                            println!("unknown message received: {:?}", msg);
-                        }
+                        self.sender
+                            .send(Envelope {
+                                src: self.node_id.clone(),
+                                dest: env.src,
+                                body: Body::InitOk(InitOk {
+                                    msg_id: self.msg_id,
+                                    in_reply_to: init.msg_id,
+                                }),
+                            })
+                            .await
+                            .unwrap();
                     }
-
+                    Body::Topology(topology) => {
+                        self.msg_id += 1;
+                        self.sender
+                            .send(Envelope {
+                                src: self.node_id.clone(),
+                                dest: env.src,
+                                body: Body::TopologyOk(TopologyOk {
+                                    msg_id: self.msg_id,
+                                    in_reply_to: topology.msg_id,
+                                }),
+                            })
+                            .await
+                            .unwrap();
+                    }
+                    Body::Send(send) => {
+                        self.msg_id += 1;
+                        let offset = self.log.inc_offset(send.key.clone());
+                        let entry = LogEntry {
+                            offset: offset,
+                            msg: send.msg,
+                        };
+                        self.log.append(send.key, entry);
+                        self.sender
+                            .send(Envelope {
+                                src: self.node_id.clone(),
+                                dest: env.src,
+                                body: Body::SendOk(SendOk {
+                                    msg_id: self.msg_id,
+                                    in_reply_to: send.msg_id,
+                                    offset: offset,
+                                }),
+                            })
+                            .await
+                            .unwrap();
+                    }
+                    Body::Poll(poll) => {
+                        self.msg_id += 1;
+                        let msgs = self.log.logs(poll.offsets);
+                        self.sender
+                            .send(Envelope {
+                                src: self.node_id.clone(),
+                                dest: env.src,
+                                body: Body::PollOk(PollOk {
+                                    msg_id: self.msg_id,
+                                    in_reply_to: poll.msg_id,
+                                    msgs: msgs,
+                                }),
+                            })
+                            .await
+                            .unwrap();
+                    }
+                    Body::CommitOffsets(commit_offsets) => {
+                        self.msg_id += 1;
+                        self.log.set_commit_offsets(commit_offsets.offsets);
+                        self.sender
+                            .send(Envelope {
+                                src: self.node_id.clone(),
+                                dest: env.src,
+                                body: Body::CommitOffsetsOk(CommitOffsetsOk {
+                                    msg_id: self.msg_id,
+                                    in_reply_to: commit_offsets.msg_id,
+                                }),
+                            })
+                            .await
+                            .unwrap();
+                    }
+                    Body::ListCommittedOffsets(list_commit_offsets) => {
+                        self.msg_id += 1;
+                        self.sender
+                            .send(Envelope {
+                                src: self.node_id.clone(),
+                                dest: env.src,
+                                body: Body::ListCommittedOffsetsOk(ListCommittedOffsetsOk {
+                                    msg_id: self.msg_id,
+                                    in_reply_to: list_commit_offsets.msg_id,
+                                    offsets: self.log.commits.clone(),
+                                }),
+                            })
+                            .await
+                            .unwrap();
+                    }
+                    msg => {
+                        println!("unknown message received: {:?}", msg);
+                    }
                 }
             }
         }

@@ -4,6 +4,72 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
+pub struct LogEntry {
+    pub offset: u64,
+    pub msg: u64,
+}
+
+pub struct Log {
+    pub log: HashMap<String, Vec<LogEntry>>,
+    pub commits: HashMap<String, u64>,
+    pub offsets: HashMap<String, u64>,
+}
+
+impl Log {
+    pub fn new() -> Self {
+        Self {
+            log: HashMap::new(),
+            commits: HashMap::new(),
+            offsets: HashMap::new(),
+        }
+    }
+
+    pub fn append(&mut self, key: String, entry: LogEntry) {
+        self.log
+            .entry(key)
+            .and_modify(|entries| entries.push(entry.clone()))
+            .or_insert(vec![entry]);
+    }
+
+    pub fn logs(
+        &mut self,
+        keys_and_offsets: HashMap<String, u64>,
+    ) -> HashMap<String, Vec<Vec<u64>>> {
+        let mut offsets: HashMap<String, Vec<Vec<u64>>> = HashMap::new();
+        for (key, offset) in keys_and_offsets.iter() {
+            if !self.log.contains_key(key) {
+                continue;
+            }
+
+            offsets.insert(key.into(), Vec::new());
+            for entry in self.log.get(key.into()).unwrap() {
+                if entry.offset >= *offset {
+                    offsets
+                        .entry(key.into())
+                        .and_modify(|entries| entries.push(vec![entry.offset, entry.msg]))
+                        .or_insert(vec![vec![entry.offset, entry.msg]]);
+                }
+            }
+        }
+        offsets
+    }
+
+    pub fn set_commit_offsets(&mut self, keys_and_offsets: HashMap<String, u64>) {
+        // iterate over (k, v) pairs; duplicate keys replace the old value
+        self.commits.extend(keys_and_offsets);
+    }
+
+    pub fn inc_offset(&mut self, key: String) -> u64 {
+        self.offsets
+            .entry(key.clone())
+            .and_modify(|e| *e += 1)
+            .or_insert(1);
+
+        *self.offsets.get(&key).unwrap_or(&1)
+    }
+}
+
+#[derive(Default, Debug, Clone, Serialize, Deserialize)]
 pub struct Counter {
     pub version: u64,
     pub value: u64,
@@ -153,6 +219,38 @@ pub enum Body {
     #[serde(rename = "counter_gossip")]
     CounterGossip(CounterGossip),
 
+    /// Send request
+    #[serde(rename = "send")]
+    Send(Send),
+
+    /// Send reply
+    #[serde(rename = "send_ok")]
+    SendOk(SendOk),
+
+    /// Poll request
+    #[serde(rename = "poll")]
+    Poll(Poll),
+
+    /// Poll reply
+    #[serde(rename = "poll_ok")]
+    PollOk(PollOk),
+
+    /// CommitOffsets request
+    #[serde(rename = "commit_offsets")]
+    CommitOffsets(CommitOffsets),
+
+    /// CommitOffsets reply
+    #[serde(rename = "commit_offsets_ok")]
+    CommitOffsetsOk(CommitOffsetsOk),
+
+    /// ListCommittedOffsets request
+    #[serde(rename = "list_committed_offsets")]
+    ListCommittedOffsets(ListCommittedOffsets),
+
+    /// ListCommittedOffsets reply
+    #[serde(rename = "list_committed_offsets_ok")]
+    ListCommittedOffsetsOk(ListCommittedOffsetsOk),
+
     /// Standard error reply (definite or indefinite)
     #[serde(rename = "error")]
     Error(ErrorBody),
@@ -263,6 +361,58 @@ pub struct Topology {
 pub struct TopologyOk {
     pub msg_id: u64,
     pub in_reply_to: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Send {
+    pub msg_id: u64,
+    pub key: String,
+    pub msg: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SendOk {
+    pub msg_id: u64,
+    pub in_reply_to: u64,
+    pub offset: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Poll {
+    pub msg_id: u64,
+    pub offsets: HashMap<String, u64>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PollOk {
+    pub msg_id: u64,
+    pub in_reply_to: u64,
+    pub msgs: HashMap<String, Vec<Vec<u64>>>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CommitOffsets {
+    pub msg_id: u64,
+    pub offsets: HashMap<String, u64>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CommitOffsetsOk {
+    pub msg_id: u64,
+    pub in_reply_to: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ListCommittedOffsets {
+    pub msg_id: u64,
+    pub keys: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ListCommittedOffsetsOk {
+    pub msg_id: u64,
+    pub in_reply_to: u64,
+    pub offsets: HashMap<String, u64>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
