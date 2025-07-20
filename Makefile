@@ -21,4 +21,3 @@ eb-two:
 
 goc:
 	maelstrom test -w g-counter --bin ./target/debug/grow_only_counter --node-count 3 --rate 100 --time-limit 20 --nemesis partition
-

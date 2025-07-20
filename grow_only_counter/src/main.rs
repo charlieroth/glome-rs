@@ -1,14 +1,15 @@
-use maelstrom::{Body, Envelope, InitOk, TopologyOk};
-use std::collections::HashSet;
+use maelstrom::{AddOk, Body, CounterGossip, Envelope, InitOk, KV, ReadOk, TopologyOk};
+use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader, stdin};
 use tokio::sync::mpsc;
+use tokio::time::interval;
 
 pub struct Node {
     pub msg_id: u64,
     pub node_id: String,
     pub node_ids: Vec<String>,
     pub neighbors: Vec<String>,
-    pub messages: HashSet<u64>,
+    pub kv: KV,
     pub sender: mpsc::Sender<Envelope>,
     pub receiver: mpsc::Receiver<Envelope>,
 }
@@ -23,7 +24,7 @@ impl Node {
             node_id: String::new(),
             node_ids: Vec::new(),
             neighbors: Vec::new(),
-            messages: HashSet::new(),
+            kv: KV::new(),
             receiver,
             sender,
         };
@@ -33,43 +34,106 @@ impl Node {
     }
 
     async fn run(&mut self) {
-        loop {
-            while let Some(env) = self.receiver.recv().await {
-                match env.body {
-                    Body::Init(init) => {
-                        self.msg_id += 1;
-                        self.node_id = init.node_id;
-                        self.node_ids = init.node_ids;
+        let mut gossip_timer = interval(Duration::from_millis(100));
 
-                        self.sender
-                            .send(Envelope {
+        loop {
+            tokio::select! {
+                _ = gossip_timer.tick() => {
+                    if !self.node_id.is_empty() && !self.node_ids.is_empty() {
+                        if self.kv.counters.is_empty() {
+                            continue;
+                        }
+
+                        for node_id in self.node_ids.iter() {
+                            if *node_id == self.node_id {
+                                continue
+                            }
+
+                            self.msg_id += 1;
+                            let _ = self.sender.send(Envelope {
                                 src: self.node_id.clone(),
-                                dest: env.src,
-                                body: Body::InitOk(InitOk {
+                                dest: node_id.clone(),
+                                body: Body::CounterGossip(CounterGossip{
                                     msg_id: self.msg_id,
-                                    in_reply_to: init.msg_id,
-                                }),
-                            })
-                            .await
-                            .unwrap();
+                                    counters: self.kv.counters.clone(),
+                                })
+                            }).await;
+                        }
                     }
-                    Body::Topology(topology) => {
-                        self.msg_id += 1;
-                        self.sender
-                            .send(Envelope {
-                                src: self.node_id.clone(),
-                                dest: env.src,
-                                body: Body::TopologyOk(TopologyOk {
-                                    msg_id: self.msg_id,
-                                    in_reply_to: topology.msg_id,
-                                }),
-                            })
-                            .await
-                            .unwrap();
+                }
+                Some(env) = self.receiver.recv() => {
+                    match env.body {
+                        Body::Init(init) => {
+                            self.msg_id += 1;
+                            self.node_id = init.node_id;
+                            self.node_ids = init.node_ids;
+
+                            self.kv.init(self.node_ids.clone());
+
+                            self.sender
+                                .send(Envelope {
+                                    src: self.node_id.clone(),
+                                    dest: env.src,
+                                    body: Body::InitOk(InitOk {
+                                        msg_id: self.msg_id,
+                                        in_reply_to: init.msg_id,
+                                    }),
+                                })
+                                .await
+                                .unwrap();
+                        }
+                        Body::Add(add) => {
+                            self.msg_id += 1;
+                            self.kv.add(self.node_id.clone(), add.delta);
+                            self.sender
+                                .send(Envelope {
+                                    src: self.node_id.clone(),
+                                    dest: env.src,
+                                    body: Body::AddOk(AddOk {
+                                        msg_id: self.msg_id,
+                                        in_reply_to: add.msg_id,
+                                    }),
+                                })
+                                .await
+                                .unwrap();
+                        }
+                        Body::Read(read) => {
+                            self.msg_id += 1;
+                            let value = self.kv.read();
+                            self.sender
+                                .send(Envelope {
+                                    src: self.node_id.clone(),
+                                    dest: env.src,
+                                    body: Body::ReadOk(ReadOk {
+                                        msg_id: self.msg_id,
+                                        in_reply_to: read.msg_id,
+                                        value: Some(value),
+                                        messages: None,
+                                    }),
+                                })
+                                .await
+                                .unwrap();
+                        }
+                        Body::CounterGossip(counter_gossip) => self.kv.merge(counter_gossip.counters),
+                        Body::Topology(topology) => {
+                            self.msg_id += 1;
+                            self.sender
+                                .send(Envelope {
+                                    src: self.node_id.clone(),
+                                    dest: env.src,
+                                    body: Body::TopologyOk(TopologyOk {
+                                        msg_id: self.msg_id,
+                                        in_reply_to: topology.msg_id,
+                                    }),
+                                })
+                                .await
+                                .unwrap();
+                        }
+                        msg => {
+                            println!("unknown message received: {:?}", msg);
+                        }
                     }
-                    msg => {
-                        println!("unknown message received: {:?}", msg);
-                    }
+
                 }
             }
         }
