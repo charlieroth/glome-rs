@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use maelstrom::{Body, BroadcastGossip, BroadcastOk, Envelope, InitOk, ReadOk, TopologyOk};
+use rand::seq::SliceRandom;
 use tokio::io::{AsyncBufReadExt, BufReader, stdin};
 use tokio::sync::mpsc;
 use tokio::time::interval;
@@ -33,6 +34,20 @@ impl Node {
         tokio::spawn(async move {
             node.run().await;
         })
+    }
+
+    fn construct_k_regular_neighbors(&self, k: usize) -> Vec<String> {
+        let mut rng = rand::rng();
+        let mut other_nodes: Vec<String> = self
+            .node_ids
+            .iter()
+            .filter(|&node| node != &self.node_id)
+            .cloned()
+            .collect();
+
+        other_nodes.shuffle(&mut rng);
+        let len = other_nodes.len();
+        other_nodes.into_iter().take(k.min(len)).collect()
     }
 
     async fn run(&mut self) {
@@ -70,6 +85,10 @@ impl Node {
                             self.msg_id += 1;
                             self.node_id = init.node_id;
                             self.node_ids = init.node_ids;
+
+                            // Construct random k-regular graph topology
+                            self.neighbors = self.construct_k_regular_neighbors(4);
+
                             self.sender
                                 .send(Envelope {
                                     src: self.node_id.clone(),
@@ -82,26 +101,26 @@ impl Node {
                                 .await
                                 .unwrap();
                         }
-                        Body::Topology(topology) => match topology.topology.get(&self.node_id) {
-                            Some(neighbors) => {
-                                self.msg_id += 1;
-                                self.neighbors = neighbors.clone();
-                                self.sender
-                                    .send(Envelope {
-                                        src: self.node_id.clone(),
-                                        dest: env.src,
-                                        body: Body::TopologyOk(TopologyOk {
-                                            msg_id: self.msg_id,
-                                            in_reply_to: topology.msg_id,
-                                        }),
-                                    })
-                                    .await
-                                    .unwrap();
-                            }
-                            None => {
-                                eprintln!("No neighbors found for node: {}", self.node_id);
-                            }
-                        },
+                        // Body::Topology(topology) => match topology.topology.get(&self.node_id) {
+                        //     Some(neighbors) => {
+                        //         self.msg_id += 1;
+                        //         self.neighbors = neighbors.clone();
+                        //         self.sender
+                        //             .send(Envelope {
+                        //                 src: self.node_id.clone(),
+                        //                 dest: env.src,
+                        //                 body: Body::TopologyOk(TopologyOk {
+                        //                     msg_id: self.msg_id,
+                        //                     in_reply_to: topology.msg_id,
+                        //                 }),
+                        //             })
+                        //             .await
+                        //             .unwrap();
+                        //     }
+                        //     None => {
+                        //         eprintln!("No neighbors found for node: {}", self.node_id);
+                        //     }
+                        // },
                         Body::BroadcastGossip(broadcast_gossip) => {
                             for message in broadcast_gossip.messages {
                                 self.messages.insert(message);
@@ -135,6 +154,20 @@ impl Node {
                                         msg_id: self.msg_id,
                                         in_reply_to: read.msg_id,
                                         messages: self.messages.iter().cloned().collect(),
+                                    }),
+                                })
+                                .await
+                                .unwrap();
+                        }
+                        Body::Topology(topology) => {
+                            self.msg_id += 1;
+                            self.sender
+                                .send(Envelope {
+                                    src: self.node_id.clone(),
+                                    dest: env.src,
+                                    body: Body::TopologyOk(TopologyOk {
+                                        msg_id: self.msg_id,
+                                        in_reply_to: topology.msg_id,
                                     }),
                                 })
                                 .await
