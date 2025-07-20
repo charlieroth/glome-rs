@@ -101,26 +101,6 @@ impl Node {
                                 .await
                                 .unwrap();
                         }
-                        // Body::Topology(topology) => match topology.topology.get(&self.node_id) {
-                        //     Some(neighbors) => {
-                        //         self.msg_id += 1;
-                        //         self.neighbors = neighbors.clone();
-                        //         self.sender
-                        //             .send(Envelope {
-                        //                 src: self.node_id.clone(),
-                        //                 dest: env.src,
-                        //                 body: Body::TopologyOk(TopologyOk {
-                        //                     msg_id: self.msg_id,
-                        //                     in_reply_to: topology.msg_id,
-                        //                 }),
-                        //             })
-                        //             .await
-                        //             .unwrap();
-                        //     }
-                        //     None => {
-                        //         eprintln!("No neighbors found for node: {}", self.node_id);
-                        //     }
-                        // },
                         Body::BroadcastGossip(broadcast_gossip) => {
                             for message in broadcast_gossip.messages {
                                 self.messages.insert(message);
@@ -153,7 +133,8 @@ impl Node {
                                     body: Body::ReadOk(ReadOk {
                                         msg_id: self.msg_id,
                                         in_reply_to: read.msg_id,
-                                        messages: self.messages.iter().cloned().collect(),
+                                        messages: Some(self.messages.iter().cloned().collect()),
+                                        value: None,
                                     }),
                                 })
                                 .await

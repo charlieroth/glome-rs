@@ -49,11 +49,11 @@ pub enum Body {
     #[serde(rename = "broadcast_gossip")]
     BroadcastGossip(BroadcastGossip),
 
-    /// Read request
+    /// Read request (broadcast and counter)
     #[serde(rename = "read")]
     Read(Read),
 
-    /// Read reply
+    /// Read reply (broadcast or counter)
     #[serde(rename = "read_ok")]
     ReadOk(ReadOk),
 
@@ -141,7 +141,10 @@ pub struct Read {
 pub struct ReadOk {
     pub msg_id: u64,
     pub in_reply_to: u64,
-    pub messages: Vec<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub messages: Option<Vec<u64>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<u64>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

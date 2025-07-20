@@ -134,7 +134,8 @@ impl Node {
                                     body: Body::ReadOk(ReadOk {
                                         msg_id: self.msg_id,
                                         in_reply_to: read.msg_id,
-                                        messages: self.messages.iter().cloned().collect(),
+                                        messages: Some(self.messages.iter().cloned().collect()),
+                                        value: None,
                                     }),
                                 })
                                 .await
