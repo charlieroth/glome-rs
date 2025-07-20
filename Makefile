@@ -21,3 +21,6 @@ eb-two:
 
 goc:
 	maelstrom test -w g-counter --bin ./target/debug/grow_only_counter --node-count 3 --rate 100 --time-limit 20 --nemesis partition
+
+sn-kafka:
+	maelstrom test -w kafka --bin ./target/debug/kafka --node-count 1 --concurrency 2n --time-limit 20 --rate 1000
