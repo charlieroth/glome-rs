@@ -44,6 +44,10 @@ pub enum Body {
     /// Broadcast reply
     #[serde(rename = "broadcast_ok")]
     BroadcastOk(BroadcastOk),
+    
+    /// BroadcastGossip request
+    #[serde(rename = "broadcast_gossip")]
+    BroadcastGossip(BroadcastGossip),
 
     /// Read request
     #[serde(rename = "read")]
@@ -120,6 +124,12 @@ pub struct Broadcast {
 pub struct BroadcastOk {
     pub msg_id: u64,
     pub in_reply_to: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BroadcastGossip {
+    pub msg_id: u64,
+    pub messages: Vec<u64>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
