@@ -44,7 +44,7 @@ pub enum Body {
     /// Broadcast reply
     #[serde(rename = "broadcast_ok")]
     BroadcastOk(BroadcastOk),
-    
+
     /// BroadcastGossip request
     #[serde(rename = "broadcast_gossip")]
     BroadcastGossip(BroadcastGossip),
