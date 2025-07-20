@@ -67,6 +67,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "efficient_broadcast"
+version = "0.1.0"
+dependencies = [
+ "maelstrom",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "gimli"
 version = "0.31.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
