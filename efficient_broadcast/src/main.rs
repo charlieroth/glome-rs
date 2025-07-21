@@ -1,4 +1,5 @@
-use maelstrom::{Body, BroadcastGossip, BroadcastOk, Envelope, InitOk, ReadOk, TopologyOk};
+use maelstrom::node::{Node, NodeExt};
+use maelstrom::{Body, BroadcastGossip, BroadcastOk, Envelope, ReadOk, TopologyOk};
 use rand::seq::SliceRandom;
 use std::collections::HashSet;
 use std::time::Duration;
@@ -6,30 +7,26 @@ use tokio::io::{AsyncBufReadExt, BufReader, stdin};
 use tokio::sync::mpsc;
 use tokio::time::interval;
 
-pub struct Node {
-    pub msg_id: u64,
-    pub node_id: String,
-    pub node_ids: Vec<String>,
+pub struct EfficientBroadcastNode {
+    pub node: Node,
     pub neighbors: Vec<String>,
     pub messages: HashSet<u64>,
-    pub sender: mpsc::Sender<Envelope>,
-    pub receiver: mpsc::Receiver<Envelope>,
 }
 
-impl Node {
+impl EfficientBroadcastNode {
+    fn new(sender: mpsc::Sender<Envelope>, receiver: mpsc::Receiver<Envelope>) -> Self {
+        Self {
+            node: Node::new(sender, receiver),
+            neighbors: Vec::new(),
+            messages: HashSet::new(),
+        }
+    }
+
     async fn spawn(
         sender: mpsc::Sender<Envelope>,
         receiver: mpsc::Receiver<Envelope>,
     ) -> tokio::task::JoinHandle<()> {
-        let mut node = Node {
-            msg_id: 0,
-            node_id: String::new(),
-            node_ids: Vec::new(),
-            neighbors: Vec::new(),
-            messages: HashSet::new(),
-            receiver,
-            sender,
-        };
+        let mut node = EfficientBroadcastNode::new(sender, receiver);
         tokio::spawn(async move {
             node.run().await;
         })
@@ -38,9 +35,10 @@ impl Node {
     fn construct_k_regular_neighbors(&self, k: usize) -> Vec<String> {
         let mut rng = rand::rng();
         let mut other_nodes: Vec<String> = self
+            .node
             .node_ids
             .iter()
-            .filter(|&node| node != &self.node_id)
+            .filter(|&node| node != &self.node.node_id)
             .cloned()
             .collect();
 
@@ -48,7 +46,9 @@ impl Node {
         let len = other_nodes.len();
         other_nodes.into_iter().take(k.min(len)).collect()
     }
+}
 
+impl NodeExt for EfficientBroadcastNode {
     async fn run(&mut self) {
         // Setup periodic gossip interval
         let mut gossip_timer = interval(Duration::from_millis(100));
@@ -57,48 +57,32 @@ impl Node {
             tokio::select! {
                 // If the gossip timer goes off, gossip current set of messages to Node's neighbors
                 _ = gossip_timer.tick() => {
-                    if !self.node_id.is_empty() && !self.neighbors.is_empty() && !self.messages.is_empty() {
+                    if !self.node.node_id.is_empty() && !self.neighbors.is_empty() && !self.messages.is_empty() {
                         for neighbor in self.neighbors.iter() {
-                            if neighbor == &self.node_id {
+                            if neighbor == &self.node.node_id {
                                 continue;
                             }
 
-                            self.msg_id += 1;
-                            let _ = self.sender
-                                .send(Envelope {
-                                    src: self.node_id.clone(),
-                                    dest: neighbor.clone(),
-                                    body: Body::BroadcastGossip(BroadcastGossip {
-                                        msg_id: self.msg_id,
-                                        messages: self.messages.iter().cloned().collect(),
-                                    }),
-                                })
-                                .await;
+                            let msg_id = self.node.next_msg_id();
+                            let _ = self.node.send(Envelope {
+                                src: self.node.node_id.clone(),
+                                dest: neighbor.clone(),
+                                body: Body::BroadcastGossip(BroadcastGossip {
+                                    msg_id,
+                                    messages: self.messages.iter().cloned().collect(),
+                                }),
+                            }).await;
                         }
                     }
                 }
                 // If the Node receives a message, handle message
-                Some(env) = self.receiver.recv() => {
+                Some(env) = self.node.recv() => {
                     match env.body {
                         Body::Init(init) => {
-                            self.msg_id += 1;
-                            self.node_id = init.node_id;
-                            self.node_ids = init.node_ids;
+                            self.node.handle_init(init, env.src).await.unwrap();
 
                             // Construct random k-regular graph topology
                             self.neighbors = self.construct_k_regular_neighbors(4);
-
-                            self.sender
-                                .send(Envelope {
-                                    src: self.node_id.clone(),
-                                    dest: env.src,
-                                    body: Body::InitOk(InitOk {
-                                        msg_id: self.msg_id,
-                                        in_reply_to: init.msg_id,
-                                    }),
-                                })
-                                .await
-                                .unwrap();
                         }
                         Body::BroadcastGossip(broadcast_gossip) => {
                             for message in broadcast_gossip.messages {
@@ -110,48 +94,39 @@ impl Node {
                             self.messages.insert(broadcast.message);
 
                             // Reply to broadcast message
-                            self.msg_id += 1;
-                            self.sender
-                                .send(Envelope {
-                                    src: self.node_id.clone(),
-                                    dest: env.src,
-                                    body: Body::BroadcastOk(BroadcastOk {
-                                        msg_id: self.msg_id,
-                                        in_reply_to: broadcast.msg_id,
-                                    }),
-                                })
-                                .await
-                                .unwrap();
+                            let msg_id = self.node.next_msg_id();
+                            self.node.send(Envelope {
+                                src: self.node.node_id.clone(),
+                                dest: env.src,
+                                body: Body::BroadcastOk(BroadcastOk {
+                                    msg_id,
+                                    in_reply_to: broadcast.msg_id,
+                                }),
+                            }).await.unwrap();
                         }
                         Body::Read(read) => {
-                            self.msg_id += 1;
-                            self.sender
-                                .send(Envelope {
-                                    src: self.node_id.clone(),
-                                    dest: env.src,
-                                    body: Body::ReadOk(ReadOk {
-                                        msg_id: self.msg_id,
-                                        in_reply_to: read.msg_id,
-                                        messages: Some(self.messages.iter().cloned().collect()),
-                                        value: None,
-                                    }),
-                                })
-                                .await
-                                .unwrap();
+                            let msg_id = self.node.next_msg_id();
+                            self.node.send(Envelope {
+                                src: self.node.node_id.clone(),
+                                dest: env.src,
+                                body: Body::ReadOk(ReadOk {
+                                    msg_id,
+                                    in_reply_to: read.msg_id,
+                                    messages: Some(self.messages.iter().cloned().collect()),
+                                    value: None,
+                                }),
+                            }).await.unwrap();
                         }
                         Body::Topology(topology) => {
-                            self.msg_id += 1;
-                            self.sender
-                                .send(Envelope {
-                                    src: self.node_id.clone(),
-                                    dest: env.src,
-                                    body: Body::TopologyOk(TopologyOk {
-                                        msg_id: self.msg_id,
-                                        in_reply_to: topology.msg_id,
-                                    }),
-                                })
-                                .await
-                                .unwrap();
+                            let msg_id = self.node.next_msg_id();
+                            self.node.send(Envelope {
+                                src: self.node.node_id.clone(),
+                                dest: env.src,
+                                body: Body::TopologyOk(TopologyOk {
+                                    msg_id,
+                                    in_reply_to: topology.msg_id,
+                                }),
+                            }).await.unwrap();
                         }
                         Body::BroadcastOk(_) => {}
                         msg => {
@@ -176,7 +151,7 @@ async fn main() {
         }
     });
 
-    Node::spawn(tx2, rx).await;
+    EfficientBroadcastNode::spawn(tx2, rx).await;
 
     let mut lines = BufReader::new(stdin()).lines();
 
