@@ -1,55 +1,33 @@
-use maelstrom::{Body, Envelope, GenerateOk, InitOk};
+use maelstrom::{Body, Envelope, GenerateOk};
+use maelstrom::node::{Node, NodeExt};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use tokio::io::{AsyncBufReadExt, BufReader, stdin};
 use tokio::sync::mpsc;
 
-pub struct Node {
-    pub msg_id: u64,
-    pub node_id: String,
-    pub node_ids: Vec<String>,
-    pub sender: mpsc::Sender<Envelope>,
-    pub receiver: mpsc::Receiver<Envelope>,
+pub struct UniqueIdService {
+    node: Node,
 }
 
-impl Node {
-    async fn new(
-        sender: mpsc::Sender<Envelope>,
-        receiver: mpsc::Receiver<Envelope>,
-    ) -> tokio::task::JoinHandle<()> {
-        let mut node = Node {
-            msg_id: 0,
-            node_id: String::new(),
-            node_ids: Vec::new(),
-            receiver,
-            sender,
-        };
-        tokio::spawn(async move {
-            node.run().await;
-        })
+impl UniqueIdService {
+    pub fn new(sender: mpsc::Sender<Envelope>, receiver: mpsc::Receiver<Envelope>) -> Self {
+        Self {
+            node: Node::new(sender, receiver),
+        }
     }
+}
 
+impl NodeExt for UniqueIdService {
     async fn run(&mut self) {
-        while let Some(env) = self.receiver.recv().await {
+        while let Some(env) = self.node.recv().await {
             match env.body {
                 Body::Init(init) => {
-                    self.msg_id += 1;
-                    self.node_id = init.node_id;
-                    self.node_ids = init.node_ids;
-                    self.sender
-                        .send(Envelope {
-                            src: self.node_id.clone(),
-                            dest: env.src,
-                            body: Body::InitOk(InitOk {
-                                msg_id: self.msg_id,
-                                in_reply_to: init.msg_id,
-                            }),
-                        })
-                        .await
-                        .unwrap();
+                    if let Err(e) = self.node.handle_init(init, env.src).await {
+                        eprintln!("Failed to handle init: {}", e);
+                    }
                 }
                 Body::Generate(generate) => {
-                    self.msg_id += 1;
+                    let msg_id = self.node.next_msg_id();
 
                     // Create unique ID by combining timestamp, node ID, and message ID
                     let timestamp = std::time::SystemTime::now()
@@ -57,23 +35,24 @@ impl Node {
                         .unwrap()
                         .as_nanos() as u64;
                     let mut hasher = DefaultHasher::new();
-                    self.node_id.hash(&mut hasher);
-                    self.msg_id.hash(&mut hasher);
+                    self.node.node_id.hash(&mut hasher);
+                    msg_id.hash(&mut hasher);
                     timestamp.hash(&mut hasher);
                     let unique_id = hasher.finish();
 
-                    self.sender
-                        .send(Envelope {
-                            src: self.node_id.clone(),
-                            dest: env.src,
-                            body: Body::GenerateOk(GenerateOk {
-                                msg_id: self.msg_id,
-                                in_reply_to: generate.msg_id,
-                                id: unique_id,
-                            }),
-                        })
-                        .await
-                        .unwrap();
+                    let envelope = Envelope {
+                        src: self.node.node_id.clone(),
+                        dest: env.src,
+                        body: Body::GenerateOk(GenerateOk {
+                            msg_id,
+                            in_reply_to: generate.msg_id,
+                            id: unique_id,
+                        }),
+                    };
+
+                    if let Err(e) = self.node.send(envelope).await {
+                        eprintln!("Failed to send response: {}", e);
+                    }
                 }
                 _ => {
                     println!("unknown message received");
@@ -88,14 +67,17 @@ async fn main() {
     let (tx, rx) = mpsc::channel::<Envelope>(32);
     let (tx2, mut rx2) = mpsc::channel::<Envelope>(32);
 
-    let _ = tokio::spawn(async move {
+    tokio::spawn(async move {
         while let Some(env) = rx2.recv().await {
             let reply = serde_json::to_string(&env).unwrap();
             println!("{}", reply);
         }
     });
 
-    let _ = Node::new(tx2, rx).await;
+    tokio::spawn(async move {
+        let mut service = UniqueIdService::new(tx2, rx);
+        service.run().await;
+    });
 
     let mut lines = BufReader::new(stdin()).lines();
 
