@@ -1,66 +1,50 @@
-use maelstrom::{Body, EchoOk, Envelope, InitOk};
+use maelstrom::{Body, EchoOk, Envelope};
+use maelstrom::node::{Node, NodeExt};
 use tokio::io::{AsyncBufReadExt, BufReader, stdin};
 use tokio::sync::mpsc;
 
-pub struct Node {
-    pub msg_id: u64,
-    pub node_id: String,
-    pub node_ids: Vec<String>,
-    pub sender: mpsc::Sender<Envelope>,
-    pub receiver: mpsc::Receiver<Envelope>,
+pub struct EchoNode {
+    node: Node,
 }
 
-impl Node {
-    async fn new(
-        sender: mpsc::Sender<Envelope>,
-        receiver: mpsc::Receiver<Envelope>,
-    ) -> tokio::task::JoinHandle<()> {
-        let mut node = Node {
-            msg_id: 0,
-            node_id: String::new(),
-            node_ids: Vec::new(),
-            receiver,
-            sender,
-        };
-        tokio::spawn(async move {
-            node.run().await;
-        })
+impl EchoNode {
+    fn new(sender: mpsc::Sender<Envelope>, receiver: mpsc::Receiver<Envelope>) -> Self {
+        Self {
+            node: Node::new(sender, receiver),
+        }
     }
 
+    async fn spawn(sender: mpsc::Sender<Envelope>, receiver: mpsc::Receiver<Envelope>) -> tokio::task::JoinHandle<()> {
+        let mut echo_node = EchoNode::new(sender, receiver);
+        tokio::spawn(async move {
+            echo_node.run().await;
+        })
+    }
+}
+
+impl NodeExt for EchoNode {
     async fn run(&mut self) {
-        while let Some(env) = self.receiver.recv().await {
+        while let Some(env) = self.node.recv().await {
             match env.body {
                 Body::Init(init) => {
-                    self.msg_id += 1;
-                    self.node_id = init.node_id;
-                    self.node_ids = init.node_ids;
-                    self.sender
-                        .send(Envelope {
-                            src: self.node_id.clone(),
-                            dest: env.src,
-                            body: Body::InitOk(InitOk {
-                                msg_id: self.msg_id,
-                                in_reply_to: init.msg_id,
-                            }),
-                        })
-                        .await
-                        .unwrap();
+                    if let Err(e) = self.node.handle_init(init, env.src).await {
+                        eprintln!("Failed to handle init: {}", e);
+                    }
                 }
                 Body::Echo(echo) => {
-                    self.msg_id += 1;
-
-                    self.sender
-                        .send(Envelope {
-                            src: self.node_id.clone(),
-                            dest: env.src,
-                            body: Body::EchoOk(EchoOk {
-                                msg_id: self.msg_id,
-                                in_reply_to: echo.msg_id,
-                                echo: echo.echo,
-                            }),
-                        })
-                        .await
-                        .unwrap();
+                    let msg_id = self.node.next_msg_id();
+                    let envelope = Envelope {
+                        src: self.node.node_id.clone(),
+                        dest: env.src,
+                        body: Body::EchoOk(EchoOk {
+                            msg_id,
+                            in_reply_to: echo.msg_id,
+                            echo: echo.echo,
+                        }),
+                    };
+                    if let Err(e) = self.node.send(envelope).await {
+                        eprintln!("Failed to send echo response: {}", e);
+                    }
                 }
                 _ => {
                     println!("unknown message received");
@@ -82,7 +66,7 @@ async fn main() {
         }
     });
 
-    Node::new(tx2, rx).await;
+    EchoNode::spawn(tx2, rx).await;
 
     let mut lines = BufReader::new(stdin()).lines();
 
