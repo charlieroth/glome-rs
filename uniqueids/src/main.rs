@@ -1,5 +1,5 @@
-use maelstrom::{Body, Envelope, GenerateOk};
 use maelstrom::node::{Node, NodeExt};
+use maelstrom::{Body, Envelope, GenerateOk};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use tokio::io::{AsyncBufReadExt, BufReader, stdin};
@@ -23,7 +23,7 @@ impl NodeExt for UniqueIdService {
             match env.body {
                 Body::Init(init) => {
                     if let Err(e) = self.node.handle_init(init, env.src).await {
-                        eprintln!("Failed to handle init: {}", e);
+                        eprintln!("Failed to handle init: {e}");
                     }
                 }
                 Body::Generate(generate) => {
@@ -51,7 +51,7 @@ impl NodeExt for UniqueIdService {
                     };
 
                     if let Err(e) = self.node.send(envelope).await {
-                        eprintln!("Failed to send response: {}", e);
+                        eprintln!("Failed to send response: {e}");
                     }
                 }
                 _ => {
@@ -70,7 +70,7 @@ async fn main() {
     tokio::spawn(async move {
         while let Some(env) = rx2.recv().await {
             let reply = serde_json::to_string(&env).unwrap();
-            println!("{}", reply);
+            println!("{reply}");
         }
     });
 
@@ -85,11 +85,11 @@ async fn main() {
         match serde_json::from_str::<Envelope>(&line) {
             Ok(env) => match tx.send(env).await {
                 Ok(()) => {}
-                Err(error) => eprintln!("message failed to send: {}", error),
+                Err(error) => eprintln!("message failed to send: {error}"),
             },
             Err(error) => {
-                eprintln!("failed to parse incoming message: {}", error);
-                eprintln!("input line was: {}", line);
+                eprintln!("failed to parse incoming message: {error}");
+                eprintln!("input line was: {line}");
                 std::process::exit(1);
             }
         }

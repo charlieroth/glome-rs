@@ -1,5 +1,5 @@
-use maelstrom::{Body, EchoOk, Envelope};
 use maelstrom::node::{Node, NodeExt};
+use maelstrom::{Body, EchoOk, Envelope};
 use tokio::io::{AsyncBufReadExt, BufReader, stdin};
 use tokio::sync::mpsc;
 
@@ -14,7 +14,10 @@ impl EchoNode {
         }
     }
 
-    async fn spawn(sender: mpsc::Sender<Envelope>, receiver: mpsc::Receiver<Envelope>) -> tokio::task::JoinHandle<()> {
+    async fn spawn(
+        sender: mpsc::Sender<Envelope>,
+        receiver: mpsc::Receiver<Envelope>,
+    ) -> tokio::task::JoinHandle<()> {
         let mut echo_node = EchoNode::new(sender, receiver);
         tokio::spawn(async move {
             echo_node.run().await;
@@ -28,7 +31,7 @@ impl NodeExt for EchoNode {
             match env.body {
                 Body::Init(init) => {
                     if let Err(e) = self.node.handle_init(init, env.src).await {
-                        eprintln!("Failed to handle init: {}", e);
+                        eprintln!("Failed to handle init: {e}");
                     }
                 }
                 Body::Echo(echo) => {
@@ -43,7 +46,7 @@ impl NodeExt for EchoNode {
                         }),
                     };
                     if let Err(e) = self.node.send(envelope).await {
-                        eprintln!("Failed to send echo response: {}", e);
+                        eprintln!("Failed to send echo response: {e}");
                     }
                 }
                 _ => {
@@ -74,11 +77,11 @@ async fn main() {
         match serde_json::from_str::<Envelope>(&line) {
             Ok(env) => match tx.send(env).await {
                 Ok(()) => {}
-                Err(error) => eprintln!("message failed to send: {}", error),
+                Err(error) => eprintln!("message failed to send: {error}"),
             },
             Err(error) => {
-                eprintln!("failed to parse incoming message: {}", error);
-                eprintln!("input line was: {}", line);
+                eprintln!("failed to parse incoming message: {error}");
+                eprintln!("input line was: {line}");
                 std::process::exit(1);
             }
         }

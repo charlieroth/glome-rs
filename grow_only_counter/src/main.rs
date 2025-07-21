@@ -15,7 +15,7 @@ pub struct Node {
 }
 
 impl Node {
-    async fn new(
+    async fn spawn(
         sender: mpsc::Sender<Envelope>,
         receiver: mpsc::Receiver<Envelope>,
     ) -> tokio::task::JoinHandle<()> {
@@ -130,7 +130,7 @@ impl Node {
                                 .unwrap();
                         }
                         msg => {
-                            println!("unknown message received: {:?}", msg);
+                            println!("unknown message received: {msg:?}");
                         }
                     }
 
@@ -152,7 +152,7 @@ async fn main() {
         }
     });
 
-    Node::new(tx2, rx).await;
+    Node::spawn(tx2, rx).await;
 
     let mut lines = BufReader::new(stdin()).lines();
 

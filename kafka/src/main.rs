@@ -15,7 +15,7 @@ pub struct Node {
 }
 
 impl Node {
-    async fn new(
+    async fn spawn(
         sender: mpsc::Sender<Envelope>,
         receiver: mpsc::Receiver<Envelope>,
     ) -> tokio::task::JoinHandle<()> {
@@ -71,7 +71,7 @@ impl Node {
                         self.msg_id += 1;
                         let offset = self.log.inc_offset(send.key.clone());
                         let entry = LogEntry {
-                            offset: offset,
+                            offset,
                             msg: send.msg,
                         };
                         self.log.append(send.key, entry);
@@ -82,7 +82,7 @@ impl Node {
                                 body: Body::SendOk(SendOk {
                                     msg_id: self.msg_id,
                                     in_reply_to: send.msg_id,
-                                    offset: offset,
+                                    offset,
                                 }),
                             })
                             .await
@@ -90,7 +90,6 @@ impl Node {
                     }
                     Body::Poll(poll) => {
                         self.msg_id += 1;
-                        let msgs = self.log.logs(poll.offsets);
                         self.sender
                             .send(Envelope {
                                 src: self.node_id.clone(),
@@ -98,7 +97,7 @@ impl Node {
                                 body: Body::PollOk(PollOk {
                                     msg_id: self.msg_id,
                                     in_reply_to: poll.msg_id,
-                                    msgs: msgs,
+                                    msgs: self.log.logs(poll.offsets),
                                 }),
                             })
                             .await
@@ -135,7 +134,7 @@ impl Node {
                             .unwrap();
                     }
                     msg => {
-                        println!("unknown message received: {:?}", msg);
+                        println!("unknown message received: {msg:?}");
                     }
                 }
             }
@@ -155,7 +154,7 @@ async fn main() {
         }
     });
 
-    Node::new(tx2, rx).await;
+    Node::spawn(tx2, rx).await;
 
     let mut lines = BufReader::new(stdin()).lines();
 
