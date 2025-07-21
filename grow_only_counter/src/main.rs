@@ -1,133 +1,111 @@
-use maelstrom::{AddOk, Body, CounterGossip, Envelope, InitOk, ReadOk, TopologyOk, kv::KV};
+use maelstrom::{
+    AddOk, Body, CounterGossip, Envelope, ReadOk, TopologyOk,
+    kv::KV,
+    node::{Node, NodeExt},
+};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader, stdin};
 use tokio::sync::mpsc;
 use tokio::time::interval;
 
-pub struct Node {
-    pub msg_id: u64,
-    pub node_id: String,
-    pub node_ids: Vec<String>,
-    pub neighbors: Vec<String>,
+pub struct GrowOnlyCounterNode {
+    pub node: Node,
     pub kv: KV,
-    pub sender: mpsc::Sender<Envelope>,
-    pub receiver: mpsc::Receiver<Envelope>,
 }
 
-impl Node {
+impl GrowOnlyCounterNode {
+    pub fn new(sender: mpsc::Sender<Envelope>, receiver: mpsc::Receiver<Envelope>) -> Self {
+        Self {
+            node: Node::new(sender, receiver),
+            kv: KV::new(),
+        }
+    }
+
     async fn spawn(
         sender: mpsc::Sender<Envelope>,
         receiver: mpsc::Receiver<Envelope>,
     ) -> tokio::task::JoinHandle<()> {
-        let mut node = Node {
-            msg_id: 0,
-            node_id: String::new(),
-            node_ids: Vec::new(),
-            neighbors: Vec::new(),
-            kv: KV::new(),
-            receiver,
-            sender,
-        };
+        let mut node = GrowOnlyCounterNode::new(sender, receiver);
         tokio::spawn(async move {
             node.run().await;
         })
     }
+}
 
+impl NodeExt for GrowOnlyCounterNode {
     async fn run(&mut self) {
         let mut gossip_timer = interval(Duration::from_millis(100));
 
         loop {
             tokio::select! {
                 _ = gossip_timer.tick() => {
-                    if !self.node_id.is_empty() && !self.node_ids.is_empty() {
+                    if !self.node.node_id.is_empty() && !self.node.node_ids.is_empty() {
                         if self.kv.counters.is_empty() {
                             continue;
                         }
 
-                        for node_id in self.node_ids.iter() {
-                            if *node_id == self.node_id {
+                        let node_ids = self.node.node_ids.clone();
+                        let current_node_id = self.node.node_id.clone();
+                        for node_id in node_ids.iter() {
+                            if *node_id == current_node_id {
                                 continue
                             }
 
-                            self.msg_id += 1;
-                            let _ = self.sender.send(Envelope {
-                                src: self.node_id.clone(),
+                            let msg_id = self.node.next_msg_id();
+                            let _ = self.node.send(Envelope {
+                                src: self.node.node_id.clone(),
                                 dest: node_id.clone(),
                                 body: Body::CounterGossip(CounterGossip{
-                                    msg_id: self.msg_id,
+                                    msg_id,
                                     counters: self.kv.counters.clone(),
                                 })
                             }).await;
                         }
                     }
                 }
-                Some(env) = self.receiver.recv() => {
+                Some(env) = self.node.recv() => {
                     match env.body {
                         Body::Init(init) => {
-                            self.msg_id += 1;
-                            self.node_id = init.node_id;
-                            self.node_ids = init.node_ids;
-
-                            self.kv.init(self.node_ids.clone());
-
-                            self.sender
-                                .send(Envelope {
-                                    src: self.node_id.clone(),
-                                    dest: env.src,
-                                    body: Body::InitOk(InitOk {
-                                        msg_id: self.msg_id,
-                                        in_reply_to: init.msg_id,
-                                    }),
-                                })
-                                .await
-                                .unwrap();
+                            self.kv.init(init.node_ids.clone());
+                            let _ = self.node.handle_init(init, env.src).await;
                         }
                         Body::Add(add) => {
-                            self.msg_id += 1;
-                            self.kv.add(self.node_id.clone(), add.delta);
-                            self.sender
-                                .send(Envelope {
-                                    src: self.node_id.clone(),
-                                    dest: env.src,
-                                    body: Body::AddOk(AddOk {
-                                        msg_id: self.msg_id,
-                                        in_reply_to: add.msg_id,
-                                    }),
-                                })
-                                .await
-                                .unwrap();
+                            let msg_id = self.node.next_msg_id();
+                            self.kv.add(self.node.node_id.clone(), add.delta);
+                            let _ = self.node.send(Envelope {
+                                src: self.node.node_id.clone(),
+                                dest: env.src,
+                                body: Body::AddOk(AddOk {
+                                    msg_id,
+                                    in_reply_to: add.msg_id,
+                                }),
+                            }).await;
                         }
                         Body::Read(read) => {
-                            self.msg_id += 1;
+                            let msg_id = self.node.next_msg_id();
                             let value = self.kv.read();
-                            self.sender
-                                .send(Envelope {
-                                    src: self.node_id.clone(),
-                                    dest: env.src,
-                                    body: Body::ReadOk(ReadOk {
-                                        msg_id: self.msg_id,
-                                        in_reply_to: read.msg_id,
-                                        value: Some(value),
-                                        messages: None,
-                                    }),
-                                })
-                                .await
-                                .unwrap();
+                            let _ = self.node.send(Envelope {
+                                src: self.node.node_id.clone(),
+                                dest: env.src,
+                                body: Body::ReadOk(ReadOk {
+                                    msg_id,
+                                    in_reply_to: read.msg_id,
+                                    value: Some(value),
+                                    messages: None,
+                                }),
+                            }).await;
                         }
                         Body::CounterGossip(counter_gossip) => self.kv.merge(counter_gossip.counters),
                         Body::Topology(topology) => {
-                            self.msg_id += 1;
-                            self.sender
-                                .send(Envelope {
-                                    src: self.node_id.clone(),
-                                    dest: env.src,
-                                    body: Body::TopologyOk(TopologyOk {
-                                        msg_id: self.msg_id,
-                                        in_reply_to: topology.msg_id,
-                                    }),
-                                })
-                                .await
-                                .unwrap();
+                            let msg_id = self.node.next_msg_id();
+                            let _ = self.node.send(Envelope {
+                                src: self.node.node_id.clone(),
+                                dest: env.src,
+                                body: Body::TopologyOk(TopologyOk {
+                                    msg_id,
+                                    in_reply_to: topology.msg_id,
+                                }),
+                            }).await;
                         }
                         msg => {
                             println!("unknown message received: {msg:?}");
@@ -152,7 +130,7 @@ async fn main() {
         }
     });
 
-    Node::spawn(tx2, rx).await;
+    GrowOnlyCounterNode::spawn(tx2, rx).await;
 
     let mut lines = BufReader::new(stdin()).lines();
 
