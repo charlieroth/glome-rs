@@ -13,6 +13,12 @@ pub struct Log {
     pub offsets: HashMap<String, u64>,
 }
 
+impl Default for Log {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Log {
     pub fn new() -> Self {
         Self {
@@ -40,7 +46,7 @@ impl Log {
             }
 
             offsets.insert(key.into(), Vec::new());
-            for entry in self.log.get(key.into()).unwrap() {
+            for entry in self.log.get(key).unwrap() {
                 if entry.offset >= *offset {
                     offsets
                         .entry(key.into())
@@ -49,7 +55,7 @@ impl Log {
                 }
             }
         }
-        return offsets;
+        offsets
     }
 
     pub fn set_commit_offsets(&mut self, keys_and_offsets: HashMap<String, u64>) {
@@ -63,6 +69,6 @@ impl Log {
             .and_modify(|e| *e += 1)
             .or_insert(1);
 
-        return *self.offsets.get(&key).unwrap_or(&1);
+        *self.offsets.get(&key).unwrap_or(&1)
     }
 }

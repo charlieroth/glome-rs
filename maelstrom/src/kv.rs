@@ -19,6 +19,12 @@ pub struct KV {
     pub counters: HashMap<String, Counter>,
 }
 
+impl Default for KV {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl KV {
     pub fn new() -> Self {
         Self {
