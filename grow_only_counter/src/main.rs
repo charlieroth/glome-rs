@@ -1,4 +1,4 @@
-use maelstrom::{AddOk, Body, CounterGossip, Envelope, InitOk, KV, ReadOk, TopologyOk};
+use maelstrom::{AddOk, Body, CounterGossip, Envelope, InitOk, ReadOk, TopologyOk, kv::KV};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader, stdin};
 use tokio::sync::mpsc;
@@ -142,23 +142,23 @@ impl Node {
 
 #[tokio::main]
 async fn main() {
-    let (inbound, inbox) = mpsc::channel::<Envelope>(32);
-    let (outbound, mut outbox) = mpsc::channel::<Envelope>(32);
+    let (tx, rx) = mpsc::channel::<Envelope>(32);
+    let (tx2, mut rx2) = mpsc::channel::<Envelope>(32);
 
     tokio::spawn(async move {
-        while let Some(env) = outbox.recv().await {
+        while let Some(env) = rx2.recv().await {
             let reply = serde_json::to_string(&env).unwrap();
             println!("{reply}");
         }
     });
 
-    Node::new(outbound, inbox).await;
+    Node::new(tx2, rx).await;
 
     let mut lines = BufReader::new(stdin()).lines();
 
     while let Ok(Some(line)) = lines.next_line().await {
         match serde_json::from_str::<Envelope>(&line) {
-            Ok(env) => match inbound.send(env).await {
+            Ok(env) => match tx.send(env).await {
                 Ok(()) => {}
                 Err(error) => eprintln!("message failed to send: {error}"),
             },

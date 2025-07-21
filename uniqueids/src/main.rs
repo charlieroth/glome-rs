@@ -1,8 +1,7 @@
+use maelstrom::{Body, Envelope, GenerateOk, InitOk};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use tokio::io::{AsyncBufReadExt, BufReader, stdin};
-
-use maelstrom::{Body, Envelope, GenerateOk, InitOk};
 use tokio::sync::mpsc;
 
 pub struct Node {

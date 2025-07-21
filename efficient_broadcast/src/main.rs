@@ -1,8 +1,7 @@
-use std::collections::HashSet;
-use std::time::Duration;
-
 use maelstrom::{Body, BroadcastGossip, BroadcastOk, Envelope, InitOk, ReadOk, TopologyOk};
 use rand::seq::SliceRandom;
+use std::collections::HashSet;
+use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader, stdin};
 use tokio::sync::mpsc;
 use tokio::time::interval;

@@ -129,14 +129,14 @@ async fn main() {
     let (tx, rx) = mpsc::channel::<Envelope>(32);
     let (tx2, mut rx2) = mpsc::channel::<Envelope>(32);
 
-    let _ = tokio::spawn(async move {
+    tokio::spawn(async move {
         while let Some(env) = rx2.recv().await {
             let reply = serde_json::to_string(&env).unwrap();
-            println!("{}", reply);
+            println!("{reply}");
         }
     });
 
-    let _ = Node::new(tx2, rx).await;
+    Node::new(tx2, rx).await;
 
     let mut lines = BufReader::new(stdin()).lines();
 
