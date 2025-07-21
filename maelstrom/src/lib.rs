@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 pub mod kv;
 pub mod log;
+pub mod node;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Envelope<T = Body> {
