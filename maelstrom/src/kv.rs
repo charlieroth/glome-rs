@@ -1,6 +1,5 @@
-use std::collections::HashMap;
-
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
 pub struct Counter {
@@ -8,13 +7,6 @@ pub struct Counter {
     pub value: u64,
 }
 
-/// KV store with a "Version Vector" as the storage layer
-///
-/// Sources:
-///
-/// * https://martinfowler.com/articles/patterns-of-distributed-systems/version-vector.html
-/// * https://en.wikipedia.org/wiki/Version_vector
-/// * https://github.com/elh/gossip-glomers/blob/main/src/4_grow_only_counter.clj
 pub struct KV {
     pub counters: HashMap<String, Counter>,
 }
