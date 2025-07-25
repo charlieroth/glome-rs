@@ -1,11 +1,54 @@
 use maelstrom::{Message, MessageBody};
-use std::io::{self, BufRead, BufReader};
+use std::{collections::HashMap, io::{self, BufRead, BufReader}};
 use tokio::sync::mpsc;
+
+struct KV {
+    entries: HashMap<u64, Option<u64>>
+}
+
+impl KV {
+    fn new() -> Self {
+        Self { entries: HashMap::new() }
+    }
+
+    fn process_txn(&mut self, txns: Vec<(String, u64, Option<u64>)>) -> Vec<(String, u64, Option<u64>)> {
+        let mut results: Vec<(String, u64, Option<u64>)> = Vec::new();
+        for txn in txns {
+            if txn.0 == "r" {
+                if let Some(value) = self.get(&txn.1) {
+                    results.push(("r".to_string(), txn.1, Some(value)));
+                } else {
+                    results.push(("r".to_string(), txn.1, None));
+                }
+            } else if txn.0 == "w" {
+                self.put(txn.1, txn.2);
+                results.push(("w".to_string(), txn.1, txn.2));
+            } else {
+                eprintln!("unknown transaction type: {txn:?}");
+            }
+        } 
+
+        results
+    }
+
+    fn put(&mut self, key: u64, value: Option<u64>) {
+        self.entries.insert(key, value);
+    }
+
+    fn get(&self, key: &u64) -> Option<u64> {
+        *self.entries.get(key).unwrap_or(&None)
+    }
+
+    fn contains(&self, key: &u64) -> bool {
+        self.entries.contains_key(key)
+    }
+}
 
 struct Node {
     id: String,
     peers: Vec<String>,
     msg_id: u64,
+    kv: KV
 }
 
 impl Node {
@@ -14,6 +57,7 @@ impl Node {
             id: String::new(),
             peers: Vec::new(),
             msg_id: 0,
+            kv: KV::new()
         }
     }
 
@@ -39,6 +83,18 @@ impl Node {
                         msg_id: self.msg_id,
                         in_reply_to: msg_id,
                     },
+                })
+            }
+            MessageBody::Txn { msg_id, txn } => {
+                let results = self.kv.process_txn(txn);
+                Some(Message {
+                    src: self.id.clone(),
+                    dest: message.src,
+                    body: MessageBody::TxnOk { 
+                        msg_id: self.msg_id,
+                        in_reply_to: msg_id,
+                        txn: results 
+                    }
                 })
             }
             _ => None,
