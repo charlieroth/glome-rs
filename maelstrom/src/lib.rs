@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 pub mod kv;
 pub mod log;
+pub mod simple_log;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {

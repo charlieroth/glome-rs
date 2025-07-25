@@ -1,4 +1,4 @@
-use maelstrom::log::Logs;
+use maelstrom::simple_log::Logs;
 use maelstrom::{Message, MessageBody};
 use std::io::{self, BufRead, BufReader};
 use tokio::sync::mpsc;

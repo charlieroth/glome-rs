@@ -24,3 +24,6 @@ goc:
 
 sn-kafka:
 	maelstrom test -w kafka --bin ./target/debug/single_node_kafka --node-count 1 --concurrency 2n --time-limit 20 --rate 1000
+
+mn-kafka:
+	maelstrom test -w kafka --bin ./target/debug/multi_node_kafka --node-count 2 --concurrency 2n --time-limit 20 --rate 1000
