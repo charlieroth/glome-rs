@@ -1,3 +1,5 @@
+.PHONY: tarut
+
 echoer:
 	maelstrom test -w echo --bin ./target/debug/echo --node-count 1 --time-limit 10
 
@@ -33,3 +35,10 @@ e-kafka:
 
 sn-tat:
 	maelstrom test -w txn-rw-register --bin ./target/debug/single_node_tat --node-count 1 --time-limit 20 --rate 1000 --concurrency 2n --consistency-models read-uncommitted --availability total
+
+tarut:
+	maelstrom test -w txn-rw-register --bin ./target/debug/tarut --node-count 2 --concurrency 2n --time-limit 20 --rate 1000 --consistency-models read-uncommitted
+
+tarut-partition:
+	maelstrom test -w txn-rw-register --bin ./target/debug/tarut --node-count 2 --concurrency 2n --time-limit 20 --rate 1000 --consistency-models read-uncommitted --availability total --nemesis partition
+
