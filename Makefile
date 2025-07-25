@@ -30,3 +30,6 @@ mn-kafka:
 
 e-kafka:
 	maelstrom test -w kafka --bin ./target/debug/multi_node_kafka --node-count 2 --concurrency 2n --time-limit 20 --rate 1000
+
+sn-tat:
+	maelstrom test -w txn-rw-register --bin ./target/debug/single_node_tat --node-count 1 --time-limit 20 --rate 1000 --concurrency 2n --consistency-models read-uncommitted --availability total

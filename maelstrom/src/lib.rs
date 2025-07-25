@@ -140,6 +140,15 @@ pub enum MessageBody {
         in_reply_to: u64,
         offsets: HashMap<String, u64>,
     },
+    Txn {
+        msg_id: u64,
+        txn: Vec<(String, u64, Option<u64>)>,
+    },
+    TxnOk {
+        msg_id: u64,
+        in_reply_to: u64,
+        txn: Vec<(String, u64, Option<u64>)>
+    },
     Error {
         in_reply_to: u64,
         code: ErrorCode,
