@@ -1,93 +1,91 @@
 use maelstrom::{Message, MessageBody};
-use std::io::{self, BufRead, BufReader, Write};
-use std::sync::Arc;
-use tokio::sync::{RwLock, mpsc};
+use tokio::{
+    sync::mpsc,
+    io::{self, AsyncBufReadExt, BufReader}
+};
 
 struct Node {
-    id: RwLock<String>,
-    peers: RwLock<Vec<String>>,
-    msg_id: RwLock<u64>,
+    /// Unique node identifier
+    id: String,
+    /// Peer node IDs for gossip
+    peers: Vec<String>,
+    /// Message counter for generating unique msg_ids
+    msg_id: u64,
 }
 
 impl Node {
     fn new() -> Self {
         Self {
-            id: RwLock::new(String::new()),
-            peers: RwLock::new(Vec::new()),
-            msg_id: RwLock::new(0),
+            id: String::new(),
+            peers: Vec::new(),
+            msg_id: 0,
         }
     }
 
-    async fn handle_init(&self, node_id: String, node_ids: Vec<String>) {
-        *self.id.write().await = node_id.clone();
-        *self.peers.write().await = node_ids
-            .iter()
-            .filter(|id| *id != &node_id)
-            .cloned()
-            .collect();
+    fn handle_init(&mut self, node_id: String, node_ids: Vec<String>) {
+        self.id = node_id.clone();
+        self.peers = node_ids.clone();
+        self.peers.retain(|p| p != &self.id);
     }
 
-    async fn process_message(&self, msg: Message) -> Option<Message> {
-        *self.msg_id.write().await += 1;
-        match msg.body {
+    fn process_message(&mut self, message: Message) -> Vec<Message> {
+        let mut out: Vec<Message> = Vec::new();
+        self.msg_id  += 1;
+        match message.body.clone() {
             MessageBody::Init {
                 msg_id,
                 node_id,
                 node_ids,
             } => {
-                self.handle_init(node_id, node_ids).await;
-                Some(Message {
-                    src: self.id.read().await.clone(),
-                    dest: msg.src,
+                self.handle_init(node_id, node_ids);
+                out.push(Message {
+                    src: self.id.clone(),
+                    dest: message.src,
                     body: MessageBody::InitOk {
-                        msg_id: *self.msg_id.read().await,
+                        msg_id: self.msg_id,
                         in_reply_to: msg_id,
                     },
                 })
             }
-            MessageBody::Echo { msg_id, echo } => Some(Message {
-                src: self.id.read().await.clone(),
-                dest: msg.src,
-                body: MessageBody::EchoOk {
-                    msg_id: *self.msg_id.read().await,
-                    in_reply_to: msg_id,
-                    echo,
-                },
-            }),
-            _ => None,
+            MessageBody::Echo { msg_id, echo } => {
+                out.push(Message {
+                    src: self.id.clone(),
+                    dest: message.src,
+                    body: MessageBody::EchoOk {
+                        msg_id: self.msg_id,
+                        in_reply_to: msg_id,
+                        echo,
+                    },
+                })
+            }
+            _ => {},
         }
+
+        out
     }
 }
 
 #[tokio::main]
 async fn main() {
-    let node = Arc::new(Node::new());
-    let (tx, mut rx) = mpsc::channel::<Message>(1000);
+    let mut node = Node::new();
+    let (tx, mut rx) = mpsc::channel::<Message>(32);
 
     // Spawn stdin reader
     let stdin_tx = tx.clone();
     tokio::spawn(async move {
-        let stdin = io::stdin();
-        let reader = BufReader::new(stdin);
-        for line in reader.lines() {
-            if let Ok(line) = line {
-                eprintln!("Received: {line}");
-                if let Ok(msg) = serde_json::from_str::<Message>(&line) {
-                    let _ = stdin_tx.send(msg).await;
-                }
+        let reader = BufReader::new(io::stdin());
+        let mut lines = reader.lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            if let Ok(msg) = serde_json::from_str::<Message>(&line) {
+                let _ = stdin_tx.send(msg).await;
             }
         }
     });
 
-    let stdout = io::stdout();
     while let Some(msg) = rx.recv().await {
-        let node_clone = node.clone();
-        if let Some(response) = node_clone.process_message(msg).await {
+        for response in node.process_message(msg){
             let response_str = serde_json::to_string(&response).unwrap();
-            eprintln!("Sending: {response_str}");
-            let mut stdout = stdout.lock();
-            writeln!(stdout, "{response_str}").unwrap();
-            stdout.flush().unwrap();
+            println!("{response_str}");
         }
     }
 }
