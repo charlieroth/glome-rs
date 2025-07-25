@@ -153,7 +153,12 @@ pub enum MessageBody {
         msg_id: u64,
         txn: Vec<(String, u64, Option<u64>)>
     },
+    TarctReplicate {
+        msg_id: u64,
+        txn: Vec<(String, u64, Option<u64>, u64)>
+    },
     Error {
+        msg_id: u64,
         in_reply_to: u64,
         code: ErrorCode,
         /// Optional human-readable description

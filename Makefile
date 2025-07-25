@@ -1,4 +1,4 @@
-.PHONY: tarut
+.PHONY: tarut tarct
 
 echoer:
 	maelstrom test -w echo --bin ./target/debug/echo --node-count 1 --time-limit 10
