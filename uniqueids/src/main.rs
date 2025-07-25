@@ -1,97 +1,109 @@
-use maelstrom::node::{Node, NodeExt};
-use maelstrom::{Body, Envelope, GenerateOk};
-use std::collections::hash_map::DefaultHasher;
+use maelstrom::{Message, MessageBody};
+use std::{
+    io::{self, BufRead, BufReader, Write}, sync::Arc
+};
 use std::hash::{Hash, Hasher};
-use tokio::io::{AsyncBufReadExt, BufReader, stdin};
-use tokio::sync::mpsc;
+use std::collections::hash_map::DefaultHasher;
+use tokio::sync::{RwLock, mpsc};
 
-pub struct UniqueIdService {
-    node: Node,
+struct Node {
+    id: RwLock<String>,
+    peers: RwLock<Vec<String>>,
+    msg_id: RwLock<u64>,
 }
 
-impl UniqueIdService {
-    pub fn new(sender: mpsc::Sender<Envelope>, receiver: mpsc::Receiver<Envelope>) -> Self {
+impl Node {
+    fn new() -> Self {
         Self {
-            node: Node::new(sender, receiver),
+            id: RwLock::new(String::new()),
+            peers: RwLock::new(Vec::new()),
+            msg_id: RwLock::new(0),
         }
     }
-}
 
-impl NodeExt for UniqueIdService {
-    async fn run(&mut self) {
-        while let Some(env) = self.node.recv().await {
-            match env.body {
-                Body::Init(init) => {
-                    if let Err(e) = self.node.handle_init(init, env.src).await {
-                        eprintln!("Failed to handle init: {e}");
-                    }
-                }
-                Body::Generate(generate) => {
-                    let msg_id = self.node.next_msg_id();
+    async fn handle_init(&self, node_id: String, node_ids: Vec<String>) {
+        *self.id.write().await = node_id.clone();
+        *self.peers.write().await = node_ids.into_iter().filter(|id| id != &node_id).collect();
+    }
 
-                    // Create unique ID by combining timestamp, node ID, and message ID
-                    let timestamp = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap()
-                        .as_nanos() as u64;
-                    let mut hasher = DefaultHasher::new();
-                    self.node.node_id.hash(&mut hasher);
-                    msg_id.hash(&mut hasher);
-                    timestamp.hash(&mut hasher);
-                    let unique_id = hasher.finish();
+    async fn handle_generate(&self, msg_id: u64) -> u64 {
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64;
+        let mut hasher = DefaultHasher::new();
+        let node_id = self.id.read().await.clone();
+        node_id.hash(&mut hasher);
+        msg_id.hash(&mut hasher);
+        timestamp.hash(&mut hasher);
+        hasher.finish()
+    }
 
-                    let envelope = Envelope {
-                        src: self.node.node_id.clone(),
-                        dest: env.src,
-                        body: Body::GenerateOk(GenerateOk {
-                            msg_id,
-                            in_reply_to: generate.msg_id,
-                            id: unique_id,
-                        }),
-                    };
-
-                    if let Err(e) = self.node.send(envelope).await {
-                        eprintln!("Failed to send response: {e}");
-                    }
-                }
-                _ => {
-                    println!("unknown message received");
-                }
+    async fn process_message(&self, msg: Message) -> Option<Message> {
+        *self.msg_id.write().await += 1;
+        match msg.body {
+            MessageBody::Init {
+                msg_id,
+                node_id,
+                node_ids,
+            } => {
+                self.handle_init(node_id, node_ids).await;
+                Some(Message {
+                    src: self.id.read().await.clone(),
+                    dest: msg.src,
+                    body: MessageBody::InitOk {
+                        msg_id: *self.msg_id.read().await,
+                        in_reply_to: msg_id,
+                    },
+                })
             }
+            MessageBody::Generate { msg_id } => {
+                let unique_id = self.handle_generate(msg_id).await;
+                Some(Message {
+                    src: self.id.read().await.clone(),
+                    dest: msg.src,
+                    body: MessageBody::GenerateOk {
+                        msg_id: *self.msg_id.read().await,
+                        in_reply_to: msg_id,
+                        id: unique_id
+                    }
+                })
+            }
+            _ => None,
         }
     }
 }
 
 #[tokio::main]
 async fn main() {
-    let (tx, rx) = mpsc::channel::<Envelope>(32);
-    let (tx2, mut rx2) = mpsc::channel::<Envelope>(32);
+    let node = Arc::new(Node::new());
+    let (tx, mut rx) = mpsc::channel::<Message>(1000);
 
+    // Spawn stdin reader
+    let stdin_tx = tx.clone();
     tokio::spawn(async move {
-        while let Some(env) = rx2.recv().await {
-            let reply = serde_json::to_string(&env).unwrap();
-            println!("{reply}");
+        let stdin = io::stdin();
+        let reader = BufReader::new(stdin);
+        for line in reader.lines() {
+            if let Ok(line) = line {
+                eprintln!("Received: {line}");
+                if let Ok(msg) = serde_json::from_str::<Message>(&line) {
+                    let _ = stdin_tx.send(msg).await;
+                }
+            }
         }
     });
 
-    tokio::spawn(async move {
-        let mut service = UniqueIdService::new(tx2, rx);
-        service.run().await;
-    });
-
-    let mut lines = BufReader::new(stdin()).lines();
-
-    while let Ok(Some(line)) = lines.next_line().await {
-        match serde_json::from_str::<Envelope>(&line) {
-            Ok(env) => match tx.send(env).await {
-                Ok(()) => {}
-                Err(error) => eprintln!("message failed to send: {error}"),
-            },
-            Err(error) => {
-                eprintln!("failed to parse incoming message: {error}");
-                eprintln!("input line was: {line}");
-                std::process::exit(1);
-            }
+    let stdout = io::stdout();
+    while let Some(msg) = rx.recv().await {
+        let node_clone = node.clone();
+        if let Some(response) = node_clone.process_message(msg).await {
+            let response_str = serde_json::to_string(&response).unwrap();
+            eprintln!("Sending: {response_str}");
+            let mut stdout = stdout.lock();
+            writeln!(stdout, "{response_str}").unwrap();
+            stdout.flush().unwrap();
         }
     }
 }
+

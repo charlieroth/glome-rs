@@ -1,150 +1,155 @@
-use maelstrom::node::Node;
-use maelstrom::{Body, Broadcast, BroadcastOk, Envelope, ReadOk, TopologyOk};
-use tokio::io::{AsyncBufReadExt, BufReader, stdin};
-use tokio::sync::mpsc;
+use maelstrom::{Message, MessageBody};
+use std::{
+    collections::HashMap,
+    io::{self, BufRead, BufReader, Write},
+    sync::Arc,
+};
+use tokio::sync::{RwLock, mpsc};
 
-pub struct BroadcastNode {
-    pub node: Node,
-    pub neighbors: Vec<String>,
-    pub messages: Vec<u64>,
+struct Node {
+    id: RwLock<String>,
+    peers: RwLock<Vec<String>>,
+    msg_id: RwLock<u64>,
+    messages: RwLock<Vec<u64>>,
 }
 
-impl BroadcastNode {
-    async fn spawn(
-        sender: mpsc::Sender<Envelope>,
-        receiver: mpsc::Receiver<Envelope>,
-    ) -> tokio::task::JoinHandle<()> {
-        let mut broadcast_node = BroadcastNode {
-            node: Node::new(sender, receiver),
-            neighbors: Vec::new(),
-            messages: Vec::new(),
-        };
-        tokio::spawn(async move {
-            broadcast_node.run().await;
-        })
+impl Node {
+    fn new() -> Self {
+        Self {
+            id: RwLock::new(String::new()),
+            peers: RwLock::new(Vec::new()),
+            msg_id: RwLock::new(0),
+            messages: RwLock::new(Vec::new()),
+        }
     }
 
-    async fn run(&mut self) {
-        while let Some(env) = self.node.recv().await {
-            match env.body {
-                Body::Init(init) => {
-                    if let Err(e) = self.node.handle_init(init, env.src).await {
-                        eprintln!("Failed to handle init: {e}");
-                    }
-                }
-                Body::Topology(topology) => match topology.topology.get(&self.node.node_id) {
-                    Some(neighbors) => {
-                        let msg_id = self.node.next_msg_id();
-                        self.neighbors = neighbors.clone();
-                        if let Err(e) = self
-                            .node
-                            .send(Envelope {
-                                src: self.node.node_id.clone(),
-                                dest: env.src,
-                                body: Body::TopologyOk(TopologyOk {
-                                    msg_id,
-                                    in_reply_to: topology.msg_id,
-                                }),
-                            })
-                            .await
-                        {
-                            eprintln!("Failed to send topology response: {e}");
-                        }
-                    }
-                    None => {
-                        eprintln!("No neighbors found for node: {}", self.node.node_id);
-                    }
-                },
-                Body::Broadcast(broadcast) => {
-                    self.messages.push(broadcast.message);
+    async fn handle_init(&self, node_id: String, node_ids: Vec<String>) {
+        *self.id.write().await = node_id.clone();
+        *self.peers.write().await = node_ids.into_iter().filter(|id| id != &node_id).collect();
+    }
 
-                    for neighbor in self.neighbors.iter() {
-                        let msg_id = self.node.next_msg_id();
-                        if let Err(e) = self
-                            .node
-                            .send(Envelope {
-                                src: self.node.node_id.clone(),
-                                dest: neighbor.clone(),
-                                body: Body::Broadcast(Broadcast {
-                                    msg_id,
-                                    message: broadcast.message,
-                                }),
-                            })
-                            .await
-                        {
-                            eprintln!("Failed to send broadcast to neighbor: {e}");
-                        }
-                    }
-                    let msg_id = self.node.next_msg_id();
-                    if let Err(e) = self
-                        .node
-                        .send(Envelope {
-                            src: self.node.node_id.clone(),
-                            dest: env.src,
-                            body: Body::BroadcastOk(BroadcastOk {
-                                msg_id,
-                                in_reply_to: broadcast.msg_id,
-                            }),
-                        })
-                        .await
-                    {
-                        eprintln!("Failed to send broadcast response: {e}");
-                    }
-                }
-                Body::Read(read) => {
-                    let msg_id = self.node.next_msg_id();
-                    if let Err(e) = self
-                        .node
-                        .send(Envelope {
-                            src: self.node.node_id.clone(),
-                            dest: env.src,
-                            body: Body::ReadOk(ReadOk {
-                                msg_id,
-                                in_reply_to: read.msg_id,
-                                messages: Some(self.messages.clone()),
-                                value: None,
-                            }),
-                        })
-                        .await
-                    {
-                        eprintln!("Failed to send read response: {e}");
-                    }
-                }
-                _ => {
-                    println!("unknown message received");
-                }
+    async fn handle_topology(&self, topology: HashMap<String, Vec<String>>) {
+        let node_id = self.id.read().await.clone();
+        if let Some(peers) = topology.get(&node_id) {
+            *self.peers.write().await =
+                peers.iter().filter(|id| *id != &node_id).cloned().collect();
+        }
+    }
+
+    async fn handle_broadcast(&self, message: u64) {
+        let stdout = io::stdout();
+        let mut stdout = stdout.lock();
+
+        self.messages.write().await.push(message);
+        let peers = self.peers.read().await;
+        for peer in peers.iter() {
+            let broadcast = Message {
+                src: self.id.read().await.clone(),
+                dest: peer.clone(),
+                body: MessageBody::Broadcast {
+                    msg_id: *self.msg_id.read().await,
+                    message,
+                },
+            };
+            let response_str = serde_json::to_string(&broadcast).unwrap();
+            writeln!(stdout, "{response_str}").unwrap();
+            stdout.flush().unwrap();
+            *self.msg_id.write().await += 1;
+        }
+    }
+
+    async fn handle_read(&self) -> Vec<u64> {
+        let messages = self.messages.read().await;
+        messages.clone()
+    }
+
+    async fn process_message(&self, msg: Message) -> Option<Message> {
+        *self.msg_id.write().await += 1;
+        match msg.body {
+            MessageBody::Init {
+                msg_id,
+                node_id,
+                node_ids,
+            } => {
+                self.handle_init(node_id, node_ids).await;
+                Some(Message {
+                    src: self.id.read().await.clone(),
+                    dest: msg.src,
+                    body: MessageBody::InitOk {
+                        msg_id: *self.msg_id.read().await,
+                        in_reply_to: msg_id,
+                    },
+                })
             }
+            MessageBody::Topology { msg_id, topology } => {
+                self.handle_topology(topology).await;
+                Some(Message {
+                    src: self.id.read().await.clone(),
+                    dest: msg.src,
+                    body: MessageBody::TopologyOk {
+                        msg_id: *self.msg_id.read().await,
+                        in_reply_to: msg_id,
+                    },
+                })
+            }
+            MessageBody::Broadcast { msg_id, message } => {
+                self.handle_broadcast(message).await;
+                Some(Message {
+                    src: self.id.read().await.clone(),
+                    dest: msg.src,
+                    body: MessageBody::BroadcastOk {
+                        msg_id: *self.msg_id.read().await,
+                        in_reply_to: msg_id,
+                    },
+                })
+            }
+            MessageBody::Read { msg_id } => {
+                let messages = self.handle_read().await;
+                Some(Message {
+                    src: self.id.read().await.clone(),
+                    dest: msg.src,
+                    body: MessageBody::ReadOk {
+                        msg_id: *self.msg_id.read().await,
+                        in_reply_to: msg_id,
+                        messages: Some(messages),
+                        value: None,
+                    },
+                })
+            }
+            _ => None,
         }
     }
 }
 
 #[tokio::main]
 async fn main() {
-    let (tx, rx) = mpsc::channel::<Envelope>(32);
-    let (tx2, mut rx2) = mpsc::channel::<Envelope>(32);
+    let node = Arc::new(Node::new());
+    let (tx, mut rx) = mpsc::channel::<Message>(1000);
 
+    // Spawn stdin reader
+    let stdin_tx = tx.clone();
     tokio::spawn(async move {
-        while let Some(env) = rx2.recv().await {
-            let reply = serde_json::to_string(&env).unwrap();
-            println!("{reply}");
+        let stdin = io::stdin();
+        let reader = BufReader::new(stdin);
+        for line in reader.lines() {
+            if let Ok(line) = line {
+                eprintln!("Received: {line}");
+                if let Ok(msg) = serde_json::from_str::<Message>(&line) {
+                    let _ = stdin_tx.send(msg).await;
+                }
+            }
         }
     });
 
-    BroadcastNode::spawn(tx2, rx).await;
-
-    let mut lines = BufReader::new(stdin()).lines();
-
-    while let Ok(Some(line)) = lines.next_line().await {
-        match serde_json::from_str::<Envelope>(&line) {
-            Ok(env) => match tx.send(env).await {
-                Ok(()) => {}
-                Err(error) => eprintln!("message failed to send: {error}"),
-            },
-            Err(error) => {
-                eprintln!("failed to parse incoming message: {error}");
-                eprintln!("input line was: {line}");
-                std::process::exit(1);
-            }
+    let stdout = io::stdout();
+    while let Some(msg) = rx.recv().await {
+        let node_clone = node.clone();
+        if let Some(response) = node_clone.process_message(msg).await {
+            let response_str = serde_json::to_string(&response).unwrap();
+            eprintln!("Sending: {response_str}");
+            let mut stdout = stdout.lock();
+            writeln!(stdout, "{response_str}").unwrap();
+            stdout.flush().unwrap();
         }
     }
 }

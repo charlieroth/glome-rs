@@ -1,149 +1,151 @@
-use maelstrom::{
-    AddOk, Body, CounterGossip, Envelope, ReadOk, TopologyOk,
-    kv::KV,
-    node::{Node, NodeExt},
+use maelstrom::{Message, MessageBody};
+use maelstrom::kv::{KV, Counter};
+use std::collections::{HashMap, HashSet};
+use std::{
+    io::{self, BufRead, BufReader},
+    time::Duration,
 };
-use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, BufReader, stdin};
-use tokio::sync::mpsc;
-use tokio::time::interval;
+use tokio::{sync::mpsc, time::interval};
 
-pub struct GrowOnlyCounterNode {
-    pub node: Node,
-    pub kv: KV,
+struct Node {
+    id: String,
+    peers: Vec<String>,
+    msg_id: u64,
+    kv: KV,
+    dirty: HashSet<String>,
 }
 
-impl GrowOnlyCounterNode {
-    pub fn new(sender: mpsc::Sender<Envelope>, receiver: mpsc::Receiver<Envelope>) -> Self {
+impl Node {
+    fn new() -> Self {
         Self {
-            node: Node::new(sender, receiver),
+            id: String::new(),
+            peers: Vec::new(),
+            msg_id: 0,
             kv: KV::new(),
+            dirty: HashSet::new(),
         }
     }
 
-    async fn spawn(
-        sender: mpsc::Sender<Envelope>,
-        receiver: mpsc::Receiver<Envelope>,
-    ) -> tokio::task::JoinHandle<()> {
-        let mut node = GrowOnlyCounterNode::new(sender, receiver);
-        tokio::spawn(async move {
-            node.run().await;
-        })
+    async fn gossip(&mut self) {
+        if self.id.is_empty() || self.peers.is_empty() || self.kv.is_empty() {
+            return;
+        }
+
+        self.msg_id += 1;
+        for peer in self.peers.iter() {
+            let broadcast = Message {
+                src: self.id.clone(),
+                dest: peer.clone(),
+                body: MessageBody::CounterGossip {
+                    msg_id: self.msg_id,
+                    counters: self.kv.counters.clone(), 
+                },
+            };
+            let response_str = serde_json::to_string(&broadcast).unwrap();
+            println!("{response_str}");
+        }
     }
-}
 
-impl NodeExt for GrowOnlyCounterNode {
-    async fn run(&mut self) {
-        let mut gossip_timer = interval(Duration::from_millis(100));
+    async fn handle_init(&mut self, node_id: String, node_ids: Vec<String>) {
+        self.id = node_id.clone();
+        self.peers = node_ids.clone();
+        self.peers.retain(|p| p != &self.id);
+    }
 
-        loop {
-            tokio::select! {
-                _ = gossip_timer.tick() => {
-                    if !self.node.node_id.is_empty() && !self.node.node_ids.is_empty() {
-                        if self.kv.counters.is_empty() {
-                            continue;
-                        }
+    async fn handle_add(&mut self, delta: u64) {
+        self.kv.add(self.id.clone(), delta);
+        self.dirty.insert(self.id.clone());
+    }
 
-                        let node_ids = self.node.node_ids.clone();
-                        let current_node_id = self.node.node_id.clone();
-                        for node_id in node_ids.iter() {
-                            if *node_id == current_node_id {
-                                continue
-                            }
+    async fn handle_read(&mut self) -> u64 {
+        self.kv.read()
+    }
 
-                            let msg_id = self.node.next_msg_id();
-                            let _ = self.node.send(Envelope {
-                                src: self.node.node_id.clone(),
-                                dest: node_id.clone(),
-                                body: Body::CounterGossip(CounterGossip{
-                                    msg_id,
-                                    counters: self.kv.counters.clone(),
-                                })
-                            }).await;
-                        }
-                    }
-                }
-                Some(env) = self.node.recv() => {
-                    match env.body {
-                        Body::Init(init) => {
-                            self.kv.init(init.node_ids.clone());
-                            let _ = self.node.handle_init(init, env.src).await;
-                        }
-                        Body::Add(add) => {
-                            let msg_id = self.node.next_msg_id();
-                            self.kv.add(self.node.node_id.clone(), add.delta);
-                            let _ = self.node.send(Envelope {
-                                src: self.node.node_id.clone(),
-                                dest: env.src,
-                                body: Body::AddOk(AddOk {
-                                    msg_id,
-                                    in_reply_to: add.msg_id,
-                                }),
-                            }).await;
-                        }
-                        Body::Read(read) => {
-                            let msg_id = self.node.next_msg_id();
-                            let value = self.kv.read();
-                            let _ = self.node.send(Envelope {
-                                src: self.node.node_id.clone(),
-                                dest: env.src,
-                                body: Body::ReadOk(ReadOk {
-                                    msg_id,
-                                    in_reply_to: read.msg_id,
-                                    value: Some(value),
-                                    messages: None,
-                                }),
-                            }).await;
-                        }
-                        Body::CounterGossip(counter_gossip) => self.kv.merge(counter_gossip.counters),
-                        Body::Topology(topology) => {
-                            let msg_id = self.node.next_msg_id();
-                            let _ = self.node.send(Envelope {
-                                src: self.node.node_id.clone(),
-                                dest: env.src,
-                                body: Body::TopologyOk(TopologyOk {
-                                    msg_id,
-                                    in_reply_to: topology.msg_id,
-                                }),
-                            }).await;
-                        }
-                        msg => {
-                            println!("unknown message received: {msg:?}");
-                        }
-                    }
+    async fn handle_counter_gossip(&mut self, counters: HashMap<String, Counter>) {
+        self.kv.merge(counters);
+    }
 
-                }
+    async fn process_message(&mut self, msg: Message) -> Option<Message> {
+        self.msg_id += 1;
+        match msg.body {
+            MessageBody::Init {
+                msg_id,
+                node_id,
+                node_ids,
+            } => {
+                self.handle_init(node_id, node_ids).await;
+                Some(Message {
+                    src: self.id.clone(),
+                    dest: msg.src,
+                    body: MessageBody::InitOk {
+                        msg_id: self.msg_id,
+                        in_reply_to: msg_id,
+                    },
+                })
             }
+            MessageBody::Add { msg_id, delta } => {
+                self.handle_add(delta).await;
+                Some(Message {
+                    src: self.id.clone(),
+                    dest: msg.src,
+                    body: MessageBody::AddOk {
+                        msg_id: self.msg_id,
+                        in_reply_to: msg_id,
+                    },
+                })
+            }
+            MessageBody::Read { msg_id } => {
+                let value = self.handle_read().await;
+                Some(Message {
+                    src: self.id.clone(),
+                    dest: msg.src,
+                    body: MessageBody::ReadOk {
+                        msg_id: self.msg_id,
+                        in_reply_to: msg_id,
+                        messages: None,
+                        value: Some(value),
+                    },
+                })
+            }
+            MessageBody::CounterGossip { msg_id, counters } => {
+                self.handle_counter_gossip(counters).await;
+                None
+            }
+            _ => None,
         }
     }
 }
 
 #[tokio::main]
 async fn main() {
-    let (tx, rx) = mpsc::channel::<Envelope>(32);
-    let (tx2, mut rx2) = mpsc::channel::<Envelope>(32);
+    let mut node = Node::new();
+    let (tx, mut rx) = mpsc::channel::<Message>(32);
+    let mut gossip_timer = interval(Duration::from_millis(100));
 
+    // Spawn stdin reader
+    let stdin_tx = tx.clone();
     tokio::spawn(async move {
-        while let Some(env) = rx2.recv().await {
-            let reply = serde_json::to_string(&env).unwrap();
-            println!("{reply}");
+        let stdin = io::stdin();
+        let reader = BufReader::new(stdin);
+        for line in reader.lines() {
+            if let Ok(line) = line {
+                if let Ok(msg) = serde_json::from_str::<Message>(&line) {
+                    let _ = stdin_tx.send(msg).await;
+                }
+            }
         }
     });
 
-    GrowOnlyCounterNode::spawn(tx2, rx).await;
-
-    let mut lines = BufReader::new(stdin()).lines();
-
-    while let Ok(Some(line)) = lines.next_line().await {
-        match serde_json::from_str::<Envelope>(&line) {
-            Ok(env) => match tx.send(env).await {
-                Ok(()) => {}
-                Err(error) => eprintln!("message failed to send: {error}"),
-            },
-            Err(error) => {
-                eprintln!("failed to parse incoming message: {error}");
-                eprintln!("input line was: {line}");
-                std::process::exit(1);
+    loop {
+        tokio::select! {
+            _ = gossip_timer.tick() => {
+                node.gossip().await;
+            }
+            Some(msg) = rx.recv() => {
+                if let Some(response) = node.process_message(msg).await {
+                    let response_str = serde_json::to_string(&response).unwrap();
+                    println!("{response_str}");
+                }
             }
         }
     }
