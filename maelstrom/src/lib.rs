@@ -95,6 +95,24 @@ pub enum MessageBody {
         in_reply_to: u64,
         offset: u64,
     },
+    ForwardSend {
+        msg_id: u64,
+        orig_src: String,
+        orig_msg_id: u64,
+        key: String,
+        msg: u64,
+    },
+    Replicate {
+        msg_id: u64,
+        key: String,
+        msg: u64,
+        offset: u64,
+    },
+    ReplicateOk {
+        msg_id: u64,
+        in_reply_to: u64,
+        offset: u64,
+    },
     Poll {
         msg_id: u64,
         offsets: HashMap<String, u64>,

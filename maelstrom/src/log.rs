@@ -20,10 +20,20 @@ impl Logs {
         self.inner.entry(key.to_string()).or_default()
     }
 
-    /// Handle `send`: append and return offset
-    pub fn append(&mut self, key: &str, msg: u64) -> u64 {
+    pub fn append_local(&mut self, key: &str, msg: u64) -> u64 {
         let log = self.get_or_create(key);
-        log.append(msg)
+        let off = log.next_offset;
+        log.entries.insert(off, msg);
+        log.next_offset += 1;
+        off
+    }
+
+    pub fn insert_at(&mut self, key: &str, offset: u64, msg: u64) {
+        let log = self.get_or_create(key);
+        log.entries.insert(offset, msg);
+        if offset >= log.next_offset {
+            log.next_offset = offset + 1;
+        }
     }
 
     /// Handle `poll`: for each requested log, read from that offset
@@ -31,7 +41,7 @@ impl Logs {
         let mut result = HashMap::new();
         for (key, &off) in offsets {
             if let Some(log) = self.inner.get(key) {
-                let entries: Vec<(u64, u64)> = log.read_from(off, None);
+                let entries = log.entries.range(off..).map(|(&o, &m)| (o, m)).collect();
                 result.insert(key.clone(), entries);
             }
         }
@@ -42,7 +52,7 @@ impl Logs {
     pub fn commit_offsets(&mut self, offsets: HashMap<String, u64>) {
         for (key, off) in offsets {
             if let Some(log) = self.inner.get_mut(&key) {
-                log.commit(off);
+                if off > log.committed { log.committed = off };
             }
         }
     }
@@ -51,9 +61,8 @@ impl Logs {
     pub fn list_committed_offsets(&self, keys: &[String]) -> HashMap<String, u64> {
         let mut result = HashMap::new();
         for key in keys {
-            if let Some(log) = self.inner.get(key) {
-                result.insert(key.clone(), log.committed_offset());
-            }
+            let off = self.inner.get(key).map(|l| l.committed).unwrap_or(0);
+            result.insert(key.clone(), off);
         }
         result
     }
