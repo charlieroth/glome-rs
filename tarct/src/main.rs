@@ -1,9 +1,9 @@
 use maelstrom::{ErrorCode, Message, MessageBody};
-use std::{
-    collections::HashMap,
-    io::{self, BufRead, BufReader},
+use std::collections::HashMap;
+use tokio::{
+    sync::mpsc,
+    io::{self, AsyncBufReadExt, BufReader}
 };
-use tokio::sync::mpsc;
 
 struct KV {
     /// Committed values: key -> optional value
@@ -72,13 +72,13 @@ impl Node {
         }
     }
 
-    async fn handle_init(&mut self, node_id: String, node_ids: Vec<String>) {
+    fn handle_init(&mut self, node_id: String, node_ids: Vec<String>) {
         self.id = node_id.clone();
         self.peers = node_ids.clone();
         self.peers.retain(|p| p != &self.id);
     }
 
-    async fn handle_tx(
+    fn handle_tx(
         &mut self,
         message: Message,
         msg_id: u64,
@@ -126,7 +126,7 @@ impl Node {
                         msg_id: self.msg_id,
                         in_reply_to: msg_id,
                         code: ErrorCode::TxnConflict,
-                        text: Some("The requested transaction has been aborted because of a conflict with another transaction. Server need not return this error on every conflict: they may choose to retry automatically instead.".into()),
+                        text: Some("Transaction aborted. Conflict detected".into()),
                         extra: None
                     }
                 })
@@ -174,7 +174,7 @@ impl Node {
         out
     }
 
-    async fn process_message(&mut self, message: Message) -> Vec<Message> {
+    fn process_message(&mut self, message: Message) -> Vec<Message> {
         let mut out: Vec<Message> = Vec::new();
         self.msg_id += 1;
         match message.body.clone() {
@@ -183,7 +183,7 @@ impl Node {
                 node_id,
                 node_ids,
             } => {
-                self.handle_init(node_id, node_ids).await;
+                self.handle_init(node_id, node_ids);
                 out.push(Message {
                     src: self.id.clone(),
                     dest: message.src,
@@ -194,7 +194,7 @@ impl Node {
                 })
             }
             MessageBody::Txn { msg_id, txn } => {
-                let messages = self.handle_tx(message, msg_id, txn).await;
+                let messages = self.handle_tx(message, msg_id, txn);
                 out.extend(messages);
             }
             MessageBody::TarctReplicate {
@@ -222,20 +222,17 @@ async fn main() {
     // Spawn stdin reader
     let stdin_tx = tx.clone();
     tokio::spawn(async move {
-        let stdin = io::stdin();
-        let reader = BufReader::new(stdin);
-        for line in reader.lines() {
-            if let Ok(line) = line {
-                if let Ok(msg) = serde_json::from_str::<Message>(&line) {
-                    let _ = stdin_tx.send(msg).await;
-                }
+        let reader = BufReader::new(io::stdin());
+        let mut lines = reader.lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            if let Ok(msg) = serde_json::from_str::<Message>(&line) {
+                let _ = stdin_tx.send(msg).await;
             }
         }
     });
 
     while let Some(msg) = rx.recv().await {
-        let responses = node.process_message(msg).await;
-        for response in responses {
+        for response in node.process_message(msg){
             let response_str = serde_json::to_string(&response).unwrap();
             println!("{response_str}");
         }
