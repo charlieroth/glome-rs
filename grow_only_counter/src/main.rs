@@ -1,5 +1,5 @@
+use maelstrom::kv::{Counter, KV};
 use maelstrom::{Message, MessageBody};
-use maelstrom::kv::{KV, Counter};
 use std::collections::{HashMap, HashSet};
 use std::{
     io::{self, BufRead, BufReader},
@@ -38,7 +38,7 @@ impl Node {
                 dest: peer.clone(),
                 body: MessageBody::CounterGossip {
                     msg_id: self.msg_id,
-                    counters: self.kv.counters.clone(), 
+                    counters: self.kv.counters.clone(),
                 },
             };
             let response_str = serde_json::to_string(&broadcast).unwrap();

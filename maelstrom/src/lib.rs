@@ -3,6 +3,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 
 pub mod kv;
+pub mod log;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
