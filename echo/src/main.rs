@@ -1,7 +1,7 @@
 use maelstrom::{Message, MessageBody};
 use tokio::{
+    io::{self, AsyncBufReadExt, BufReader},
     sync::mpsc,
-    io::{self, AsyncBufReadExt, BufReader}
 };
 
 struct Node {
@@ -30,7 +30,7 @@ impl Node {
 
     fn process_message(&mut self, message: Message) -> Vec<Message> {
         let mut out: Vec<Message> = Vec::new();
-        self.msg_id  += 1;
+        self.msg_id += 1;
         match message.body.clone() {
             MessageBody::Init {
                 msg_id,
@@ -47,18 +47,16 @@ impl Node {
                     },
                 })
             }
-            MessageBody::Echo { msg_id, echo } => {
-                out.push(Message {
-                    src: self.id.clone(),
-                    dest: message.src,
-                    body: MessageBody::EchoOk {
-                        msg_id: self.msg_id,
-                        in_reply_to: msg_id,
-                        echo,
-                    },
-                })
-            }
-            _ => {},
+            MessageBody::Echo { msg_id, echo } => out.push(Message {
+                src: self.id.clone(),
+                dest: message.src,
+                body: MessageBody::EchoOk {
+                    msg_id: self.msg_id,
+                    in_reply_to: msg_id,
+                    echo,
+                },
+            }),
+            _ => {}
         }
 
         out
@@ -83,7 +81,7 @@ async fn main() {
     });
 
     while let Some(msg) = rx.recv().await {
-        for response in node.process_message(msg){
+        for response in node.process_message(msg) {
             let response_str = serde_json::to_string(&response).unwrap();
             println!("{response_str}");
         }
