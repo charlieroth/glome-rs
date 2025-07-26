@@ -1,17 +1,25 @@
 use maelstrom::{Message, MessageBody};
-use std::{collections::HashMap, io::{self, BufRead, BufReader}};
-use tokio::sync::mpsc;
+use std::collections::HashMap;
+use tokio::{
+    io::{self, AsyncBufReadExt, BufReader},
+    sync::mpsc,
+};
 
 struct KV {
-    entries: HashMap<u64, Option<u64>>
+    entries: HashMap<u64, Option<u64>>,
 }
 
 impl KV {
     fn new() -> Self {
-        Self { entries: HashMap::new() }
+        Self {
+            entries: HashMap::new(),
+        }
     }
 
-    fn process_txn(&mut self, txn: Vec<(String, u64, Option<u64>)>) -> Vec<(String, u64, Option<u64>)> {
+    fn process_txn(
+        &mut self,
+        txn: Vec<(String, u64, Option<u64>)>,
+    ) -> Vec<(String, u64, Option<u64>)> {
         let mut results = Vec::with_capacity(txn.len());
         for (op, key, opt_val) in txn {
             match op.as_str() {
@@ -31,10 +39,14 @@ impl KV {
 }
 
 struct Node {
+    /// Unique node identifier
     id: String,
+    /// Peer node IDs for gossip
     peers: Vec<String>,
+    /// Message counter for generating unique msg_ids
     msg_id: u64,
-    kv: KV
+    /// Key-value store to process cluster transactions
+    kv: KV,
 }
 
 impl Node {
@@ -43,25 +55,27 @@ impl Node {
             id: String::new(),
             peers: Vec::new(),
             msg_id: 0,
-            kv: KV::new()
+            kv: KV::new(),
         }
     }
 
-    async fn handle_init(&mut self, node_id: String, node_ids: Vec<String>) {
+    fn handle_init(&mut self, node_id: String, node_ids: Vec<String>) {
         self.id = node_id.clone();
         self.peers = node_ids.clone();
         self.peers.retain(|p| p != &self.id);
     }
 
-    async fn handle_tx(&mut self, message: Message, msg_id: u64, txn: Vec<(String, u64, Option<u64>)>) -> Vec<Message> {
+    fn handle_tx(
+        &mut self,
+        message: Message,
+        msg_id: u64,
+        txn: Vec<(String, u64, Option<u64>)>,
+    ) -> Vec<Message> {
         let mut out: Vec<Message> = Vec::new();
         // Apply read+write ops locally
         let results = self.kv.process_txn(txn.clone());
         // Broadcast *only* writes to each peer
-        let write_ops: Vec<_> = txn
-            .into_iter()
-            .filter(|(op, _, _)| op == "w")
-            .collect();
+        let write_ops: Vec<_> = txn.into_iter().filter(|(op, _, _)| op == "w").collect();
 
         for peer in &self.peers {
             self.msg_id += 1;
@@ -70,8 +84,8 @@ impl Node {
                 dest: peer.clone(),
                 body: MessageBody::TarutReplicate {
                     msg_id: self.msg_id,
-                    txn: write_ops.clone()
-                }
+                    txn: write_ops.clone(),
+                },
             })
         }
 
@@ -82,14 +96,14 @@ impl Node {
             body: MessageBody::TxnOk {
                 msg_id: self.msg_id,
                 in_reply_to: msg_id,
-                txn: results
-            }
+                txn: results,
+            },
         });
 
         out
     }
 
-    async fn process_message(&mut self, message: Message) -> Vec<Message> {
+    fn process_message(&mut self, message: Message) -> Vec<Message> {
         let mut out: Vec<Message> = Vec::new();
         self.msg_id += 1;
         match message.body.clone() {
@@ -98,7 +112,7 @@ impl Node {
                 node_id,
                 node_ids,
             } => {
-                self.handle_init(node_id, node_ids).await;
+                self.handle_init(node_id, node_ids);
                 out.push(Message {
                     src: self.id.clone(),
                     dest: message.src,
@@ -109,7 +123,7 @@ impl Node {
                 })
             }
             MessageBody::Txn { msg_id, txn } => {
-                let messages = self.handle_tx(message, msg_id, txn).await;
+                let messages = self.handle_tx(message, msg_id, txn);
                 out.extend(messages);
             }
             MessageBody::TarutReplicate { txn, .. } => {
@@ -117,7 +131,7 @@ impl Node {
                 // but do not rebroadcast them
                 self.kv.process_txn(txn);
             }
-            _ => {},
+            _ => {}
         }
         out
     }
@@ -131,24 +145,19 @@ async fn main() {
     // Spawn stdin reader
     let stdin_tx = tx.clone();
     tokio::spawn(async move {
-        let stdin = io::stdin();
-        let reader = BufReader::new(stdin);
-        for line in reader.lines() {
-            if let Ok(line) = line {
-                if let Ok(msg) = serde_json::from_str::<Message>(&line) {
-                    let _ = stdin_tx.send(msg).await;
-                }
+        let reader = BufReader::new(io::stdin());
+        let mut lines = reader.lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            if let Ok(msg) = serde_json::from_str::<Message>(&line) {
+                let _ = stdin_tx.send(msg).await;
             }
         }
     });
 
     while let Some(msg) = rx.recv().await {
-        let responses = node.process_message(msg).await;
-        for response in responses {
+        for response in node.process_message(msg) {
             let response_str = serde_json::to_string(&response).unwrap();
             println!("{response_str}");
         }
     }
 }
-
-
