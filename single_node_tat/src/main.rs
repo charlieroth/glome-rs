@@ -1,9 +1,9 @@
 use maelstrom::{Message, MessageBody};
-use std::{
-    collections::HashMap,
-    io::{self, BufRead, BufReader},
+use std::collections::HashMap;
+use tokio::{
+    io::{self, AsyncBufReadExt, BufReader},
+    sync::mpsc,
 };
-use tokio::sync::mpsc;
 
 struct KV {
     entries: HashMap<u64, Option<u64>>,
@@ -18,40 +18,34 @@ impl KV {
 
     fn process_txn(
         &mut self,
-        txns: Vec<(String, u64, Option<u64>)>,
+        txn: Vec<(String, u64, Option<u64>)>,
     ) -> Vec<(String, u64, Option<u64>)> {
-        let mut results: Vec<(String, u64, Option<u64>)> = Vec::new();
-        for txn in txns {
-            if txn.0 == "r" {
-                if let Some(value) = self.get(&txn.1) {
-                    results.push(("r".to_string(), txn.1, Some(value)));
-                } else {
-                    results.push(("r".to_string(), txn.1, None));
+        let mut results = Vec::with_capacity(txn.len());
+        for (op, key, opt_val) in txn {
+            match op.as_str() {
+                "r" => {
+                    let read_val = self.entries.get(&key).and_then(|v| *v);
+                    results.push(("r".to_string(), key, read_val));
                 }
-            } else if txn.0 == "w" {
-                self.put(txn.1, txn.2);
-                results.push(("w".to_string(), txn.1, txn.2));
-            } else {
-                eprintln!("unknown transaction type: {txn:?}");
+                "w" => {
+                    self.entries.insert(key, opt_val);
+                    results.push(("w".to_string(), key, opt_val));
+                }
+                _ => unreachable!("unknown transaction operation"),
             }
         }
-
         results
-    }
-
-    fn put(&mut self, key: u64, value: Option<u64>) {
-        self.entries.insert(key, value);
-    }
-
-    fn get(&self, key: &u64) -> Option<u64> {
-        *self.entries.get(key).unwrap_or(&None)
     }
 }
 
 struct Node {
+    /// Unique node identifier
     id: String,
+    /// Peer node IDs for gossip
     peers: Vec<String>,
+    /// Message counter for generating unique msg_ids
     msg_id: u64,
+    /// Key-value store to process cluster transactions
     kv: KV,
 }
 
@@ -65,13 +59,14 @@ impl Node {
         }
     }
 
-    async fn handle_init(&mut self, node_id: String, node_ids: Vec<String>) {
+    fn handle_init(&mut self, node_id: String, node_ids: Vec<String>) {
         self.id = node_id.clone();
         self.peers = node_ids.clone();
         self.peers.retain(|p| p != &self.id);
     }
 
-    async fn process_message(&mut self, message: Message) -> Option<Message> {
+    fn process_message(&mut self, message: Message) -> Vec<Message> {
+        let mut out: Vec<Message> = Vec::new();
         self.msg_id += 1;
         match message.body {
             MessageBody::Init {
@@ -79,8 +74,8 @@ impl Node {
                 node_id,
                 node_ids,
             } => {
-                self.handle_init(node_id, node_ids).await;
-                Some(Message {
+                self.handle_init(node_id, node_ids);
+                out.push(Message {
                     src: self.id.clone(),
                     dest: message.src,
                     body: MessageBody::InitOk {
@@ -91,7 +86,7 @@ impl Node {
             }
             MessageBody::Txn { msg_id, txn } => {
                 let results = self.kv.process_txn(txn);
-                Some(Message {
+                out.push(Message {
                     src: self.id.clone(),
                     dest: message.src,
                     body: MessageBody::TxnOk {
@@ -101,8 +96,9 @@ impl Node {
                     },
                 })
             }
-            _ => None,
+            _ => {}
         }
+        out
     }
 }
 
@@ -114,19 +110,17 @@ async fn main() {
     // Spawn stdin reader
     let stdin_tx = tx.clone();
     tokio::spawn(async move {
-        let stdin = io::stdin();
-        let reader = BufReader::new(stdin);
-        for line in reader.lines() {
-            if let Ok(line) = line {
-                if let Ok(msg) = serde_json::from_str::<Message>(&line) {
-                    let _ = stdin_tx.send(msg).await;
-                }
+        let reader = BufReader::new(io::stdin());
+        let mut lines = reader.lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            if let Ok(msg) = serde_json::from_str::<Message>(&line) {
+                let _ = stdin_tx.send(msg).await;
             }
         }
     });
 
     while let Some(msg) = rx.recv().await {
-        if let Some(response) = node.process_message(msg).await {
+        for response in node.process_message(msg) {
             let response_str = serde_json::to_string(&response).unwrap();
             println!("{response_str}");
         }
