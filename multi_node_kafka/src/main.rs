@@ -1,8 +1,10 @@
 use maelstrom::log::Logs;
 use maelstrom::{Message, MessageBody};
 use std::collections::HashMap;
-use std::io::{self, BufRead, BufReader};
-use tokio::sync::mpsc;
+use tokio::{
+    io::{self, AsyncBufReadExt, BufReader},
+    sync::mpsc,
+};
 
 struct Pending {
     client: String,
@@ -11,12 +13,19 @@ struct Pending {
 }
 
 struct Node {
+    /// Unique node identifier
     id: String,
+    /// Peer node IDs for gossip
     peers: Vec<String>,
-    leader: String,
+    /// Message counter for generating unique msg_ids
     msg_id: u64,
+    /// Current leader node ID in the cluster
+    leader: String,
+    /// Next offset for node to use
     next_offset: u64,
+    /// Append-only logs
     logs: Logs,
+    /// Pending operations
     pendings: HashMap<u64, Pending>,
 }
 
@@ -25,8 +34,8 @@ impl Node {
         Self {
             id: String::new(),
             peers: Vec::new(),
-            leader: String::new(),
             msg_id: 0,
+            leader: String::new(),
             next_offset: 0,
             logs: Logs::new(),
             pendings: HashMap::new(),
@@ -108,10 +117,9 @@ impl Node {
         out
     }
 
-    fn handle(&mut self, message: Message) -> Vec<Message> {
+    fn process_message(&mut self, message: Message) -> Vec<Message> {
         let mut out = Vec::new();
         self.msg_id += 1;
-
         match message.body.clone() {
             MessageBody::Init {
                 msg_id,
@@ -150,7 +158,7 @@ impl Node {
                         msg,
                     },
                 };
-                out.extend(self.handle(fwd));
+                out.extend(self.process_message(fwd));
             }
             MessageBody::Replicate {
                 msg_id,
@@ -237,7 +245,6 @@ impl Node {
             }
             _ => {}
         }
-
         out
     }
 }
@@ -250,20 +257,18 @@ async fn main() {
     // Spawn stdin reader
     let stdin_tx = tx.clone();
     tokio::spawn(async move {
-        let stdin = io::stdin();
-        let reader = BufReader::new(stdin);
-        for line in reader.lines() {
-            if let Ok(line) = line {
-                if let Ok(msg) = serde_json::from_str::<Message>(&line) {
-                    let _ = stdin_tx.send(msg).await;
-                }
+        let reader = BufReader::new(io::stdin());
+        let mut lines = reader.lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            if let Ok(msg) = serde_json::from_str::<Message>(&line) {
+                let _ = stdin_tx.send(msg).await;
             }
         }
     });
 
     while let Some(msg) = rx.recv().await {
-        for resp in node.handle(msg) {
-            let response_str = serde_json::to_string(&resp).unwrap();
+        for response in node.process_message(msg) {
+            let response_str = serde_json::to_string(&response).unwrap();
             println!("{response_str}");
         }
     }
