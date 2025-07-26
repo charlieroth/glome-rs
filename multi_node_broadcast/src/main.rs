@@ -1,16 +1,20 @@
 use maelstrom::{Message, MessageBody};
 use rand::seq::SliceRandom;
-use std::{
-    collections::HashSet,
-    io::{self, BufRead, BufReader},
-    time::Duration,
+use std::collections::HashSet;
+use tokio::{
+    io::{self, AsyncBufReadExt, BufReader},
+    sync::mpsc,
+    time::{Duration, interval},
 };
-use tokio::{sync::mpsc, time::interval};
 
 struct Node {
+    /// Unique node identifier
     id: String,
+    /// Peer node IDs for gossip
     peers: Vec<String>,
+    /// Message counter for generating unique msg_ids
     msg_id: u64,
+    /// Node messages
     messages: HashSet<u64>,
 }
 
@@ -24,7 +28,7 @@ impl Node {
         }
     }
 
-    async fn construct_k_regular_neighbors(&self, k: usize) -> Vec<String> {
+    fn construct_k_regular_neighbors(&self, k: usize) -> Vec<String> {
         let mut rng = rand::rng();
         let mut other_nodes: Vec<String> = self
             .peers
@@ -38,47 +42,48 @@ impl Node {
         other_nodes.into_iter().take(k.min(len)).collect()
     }
 
-    async fn handle_init(&mut self, node_id: String, node_ids: Vec<String>) {
+    fn handle_init(&mut self, node_id: String, node_ids: Vec<String>) {
         self.id = node_id.clone();
         self.peers = node_ids.clone();
-        self.peers = self.construct_k_regular_neighbors(4).await;
+        self.peers = self.construct_k_regular_neighbors(4);
     }
 
-    async fn gossip(&mut self) {
+    fn gossip(&mut self) -> Vec<Message> {
+        let mut out: Vec<Message> = Vec::new();
         if self.id.is_empty() || self.peers.is_empty() || self.messages.is_empty() {
-            return;
+            return out;
         }
 
         self.msg_id += 1;
         for peer in self.peers.iter() {
-            let broadcast = Message {
+            out.push(Message {
                 src: self.id.clone(),
                 dest: peer.clone(),
                 body: MessageBody::BroadcastGossip {
                     msg_id: self.msg_id,
                     messages: self.messages.iter().cloned().collect(),
                 },
-            };
-            let response_str = serde_json::to_string(&broadcast).unwrap();
-            println!("{response_str}");
+            });
         }
+        out
     }
 
-    async fn handle_broadcast_gossip(&mut self, messages: Vec<u64>) {
+    fn handle_broadcast_gossip(&mut self, messages: Vec<u64>) {
         for message in messages {
             self.messages.insert(message);
         }
     }
 
-    async fn handle_broadcast(&mut self, message: u64) {
+    fn handle_broadcast(&mut self, message: u64) {
         self.messages.insert(message);
     }
 
-    async fn handle_read(&self) -> Vec<u64> {
+    fn handle_read(&self) -> Vec<u64> {
         self.messages.iter().cloned().collect()
     }
 
-    async fn process_message(&mut self, msg: Message) -> Option<Message> {
+    fn process_message(&mut self, msg: Message) -> Vec<Message> {
+        let mut out: Vec<Message> = Vec::new();
         self.msg_id += 1;
         match msg.body {
             MessageBody::Init {
@@ -86,8 +91,8 @@ impl Node {
                 node_id,
                 node_ids,
             } => {
-                self.handle_init(node_id, node_ids).await;
-                Some(Message {
+                self.handle_init(node_id, node_ids);
+                out.push(Message {
                     src: self.id.clone(),
                     dest: msg.src,
                     body: MessageBody::InitOk {
@@ -99,7 +104,7 @@ impl Node {
             MessageBody::Topology {
                 msg_id,
                 topology: _,
-            } => Some(Message {
+            } => out.push(Message {
                 src: self.id.clone(),
                 dest: msg.src,
                 body: MessageBody::TopologyOk {
@@ -108,8 +113,8 @@ impl Node {
                 },
             }),
             MessageBody::Broadcast { msg_id, message } => {
-                self.handle_broadcast(message).await;
-                Some(Message {
+                self.handle_broadcast(message);
+                out.push(Message {
                     src: self.id.clone(),
                     dest: msg.src,
                     body: MessageBody::BroadcastOk {
@@ -122,12 +127,11 @@ impl Node {
                 msg_id: _,
                 messages,
             } => {
-                self.handle_broadcast_gossip(messages).await;
-                None
+                self.handle_broadcast_gossip(messages);
             }
             MessageBody::Read { msg_id } => {
-                let messages = self.handle_read().await;
-                Some(Message {
+                let messages = self.handle_read();
+                out.push(Message {
                     src: self.id.clone(),
                     dest: msg.src,
                     body: MessageBody::ReadOk {
@@ -138,8 +142,9 @@ impl Node {
                     },
                 })
             }
-            _ => None,
+            _ => {}
         }
+        out
     }
 }
 
@@ -152,13 +157,11 @@ async fn main() {
     // Spawn stdin reader
     let stdin_tx = tx.clone();
     tokio::spawn(async move {
-        let stdin = io::stdin();
-        let reader = BufReader::new(stdin);
-        for line in reader.lines() {
-            if let Ok(line) = line {
-                if let Ok(msg) = serde_json::from_str::<Message>(&line) {
-                    let _ = stdin_tx.send(msg).await;
-                }
+        let reader = BufReader::new(io::stdin());
+        let mut lines = reader.lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            if let Ok(msg) = serde_json::from_str::<Message>(&line) {
+                let _ = stdin_tx.send(msg).await;
             }
         }
     });
@@ -166,10 +169,14 @@ async fn main() {
     loop {
         tokio::select! {
             _ = gossip_timer.tick() => {
-                node.gossip().await;
+                let msgs = node.gossip();
+                for msg in msgs {
+                    let response_str = serde_json::to_string(&msg).unwrap();
+                    println!("{response_str}");
+                }
             }
             Some(msg) = rx.recv() => {
-                if let Some(response) = node.process_message(msg).await {
+                for response in node.process_message(msg) {
                     let response_str = serde_json::to_string(&response).unwrap();
                     println!("{response_str}");
                 }
