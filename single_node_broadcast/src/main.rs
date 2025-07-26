@@ -1,155 +1,141 @@
 use maelstrom::{Message, MessageBody};
-use std::{
-    collections::HashMap,
-    io::{self, BufRead, BufReader, Write},
-    sync::Arc,
+use tokio::{
+    io::{self, AsyncBufReadExt, BufReader},
+    sync::mpsc,
 };
-use tokio::sync::{RwLock, mpsc};
 
 struct Node {
-    id: RwLock<String>,
-    peers: RwLock<Vec<String>>,
-    msg_id: RwLock<u64>,
-    messages: RwLock<Vec<u64>>,
+    /// Unique node identifier
+    id: String,
+    /// Peer node IDs for gossip
+    peers: Vec<String>,
+    /// Message counter for generating unique msg_ids
+    msg_id: u64,
+    /// Node messages
+    messages: Vec<u64>,
 }
 
 impl Node {
     fn new() -> Self {
         Self {
-            id: RwLock::new(String::new()),
-            peers: RwLock::new(Vec::new()),
-            msg_id: RwLock::new(0),
-            messages: RwLock::new(Vec::new()),
+            id: String::new(),
+            peers: Vec::new(),
+            msg_id: 0,
+            messages: Vec::new(),
         }
     }
 
-    async fn handle_init(&self, node_id: String, node_ids: Vec<String>) {
-        *self.id.write().await = node_id.clone();
-        *self.peers.write().await = node_ids.into_iter().filter(|id| id != &node_id).collect();
+    fn handle_init(&mut self, node_id: String, node_ids: Vec<String>) {
+        self.id = node_id.clone();
+        self.peers = node_ids.clone();
+        self.peers.retain(|p| p != &self.id);
     }
 
-    async fn handle_topology(&self, topology: HashMap<String, Vec<String>>) {
-        let node_id = self.id.read().await.clone();
-        if let Some(peers) = topology.get(&node_id) {
-            *self.peers.write().await =
-                peers.iter().filter(|id| *id != &node_id).cloned().collect();
-        }
-    }
-
-    async fn handle_broadcast(&self, message: u64) {
-        let stdout = io::stdout();
-        let mut stdout = stdout.lock();
-
-        self.messages.write().await.push(message);
-        let peers = self.peers.read().await;
-        for peer in peers.iter() {
-            let broadcast = Message {
-                src: self.id.read().await.clone(),
+    fn handle_broadcast(&mut self, message: u64) -> Vec<Message> {
+        let mut out: Vec<Message> = Vec::new();
+        self.messages.push(message);
+        for peer in self.peers.iter() {
+            out.push(Message {
+                src: self.id.clone(),
                 dest: peer.clone(),
                 body: MessageBody::Broadcast {
-                    msg_id: *self.msg_id.read().await,
+                    msg_id: self.msg_id,
                     message,
                 },
-            };
-            let response_str = serde_json::to_string(&broadcast).unwrap();
-            writeln!(stdout, "{response_str}").unwrap();
-            stdout.flush().unwrap();
-            *self.msg_id.write().await += 1;
+            });
+            self.msg_id += 1;
         }
+        out
     }
 
-    async fn handle_read(&self) -> Vec<u64> {
-        let messages = self.messages.read().await;
-        messages.clone()
+    fn handle_read(&self) -> Vec<u64> {
+        self.messages.clone()
     }
 
-    async fn process_message(&self, msg: Message) -> Option<Message> {
-        *self.msg_id.write().await += 1;
-        match msg.body {
+    fn process_message(&mut self, msg: Message) -> Vec<Message> {
+        let mut out: Vec<Message> = Vec::new();
+        self.msg_id += 1;
+        match msg.body.clone() {
             MessageBody::Init {
                 msg_id,
                 node_id,
                 node_ids,
             } => {
-                self.handle_init(node_id, node_ids).await;
-                Some(Message {
-                    src: self.id.read().await.clone(),
+                self.handle_init(node_id, node_ids);
+                out.push(Message {
+                    src: self.id.clone(),
                     dest: msg.src,
                     body: MessageBody::InitOk {
-                        msg_id: *self.msg_id.read().await,
+                        msg_id: self.msg_id,
                         in_reply_to: msg_id,
                     },
-                })
+                });
             }
-            MessageBody::Topology { msg_id, topology } => {
-                self.handle_topology(topology).await;
-                Some(Message {
-                    src: self.id.read().await.clone(),
+            MessageBody::Topology {
+                msg_id,
+                topology: _,
+            } => {
+                out.push(Message {
+                    src: self.id.clone(),
                     dest: msg.src,
                     body: MessageBody::TopologyOk {
-                        msg_id: *self.msg_id.read().await,
+                        msg_id: self.msg_id,
                         in_reply_to: msg_id,
                     },
-                })
+                });
             }
             MessageBody::Broadcast { msg_id, message } => {
-                self.handle_broadcast(message).await;
-                Some(Message {
-                    src: self.id.read().await.clone(),
+                let broadcasts = self.handle_broadcast(message);
+                out.extend(broadcasts);
+                out.push(Message {
+                    src: self.id.clone(),
                     dest: msg.src,
                     body: MessageBody::BroadcastOk {
-                        msg_id: *self.msg_id.read().await,
+                        msg_id: self.msg_id,
                         in_reply_to: msg_id,
                     },
-                })
+                });
             }
             MessageBody::Read { msg_id } => {
-                let messages = self.handle_read().await;
-                Some(Message {
-                    src: self.id.read().await.clone(),
+                let messages = self.handle_read();
+                out.push(Message {
+                    src: self.id.clone(),
                     dest: msg.src,
                     body: MessageBody::ReadOk {
-                        msg_id: *self.msg_id.read().await,
+                        msg_id: self.msg_id,
                         in_reply_to: msg_id,
                         messages: Some(messages),
                         value: None,
                     },
                 })
             }
-            _ => None,
+            _ => {}
         }
+        out
     }
 }
 
 #[tokio::main]
 async fn main() {
-    let node = Arc::new(Node::new());
-    let (tx, mut rx) = mpsc::channel::<Message>(1000);
+    let mut node = Node::new();
+    let (tx, mut rx) = mpsc::channel::<Message>(32);
 
     // Spawn stdin reader
     let stdin_tx = tx.clone();
     tokio::spawn(async move {
-        let stdin = io::stdin();
-        let reader = BufReader::new(stdin);
-        for line in reader.lines() {
-            if let Ok(line) = line {
-                eprintln!("Received: {line}");
-                if let Ok(msg) = serde_json::from_str::<Message>(&line) {
-                    let _ = stdin_tx.send(msg).await;
-                }
+        let reader = BufReader::new(io::stdin());
+        let mut lines = reader.lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            if let Ok(msg) = serde_json::from_str::<Message>(&line) {
+                let _ = stdin_tx.send(msg).await;
             }
         }
     });
 
-    let stdout = io::stdout();
     while let Some(msg) = rx.recv().await {
-        let node_clone = node.clone();
-        if let Some(response) = node_clone.process_message(msg).await {
+        for response in node.process_message(msg) {
             let response_str = serde_json::to_string(&response).unwrap();
-            eprintln!("Sending: {response_str}");
-            let mut stdout = stdout.lock();
-            writeln!(stdout, "{response_str}").unwrap();
-            stdout.flush().unwrap();
+            println!("{response_str}");
         }
     }
 }
