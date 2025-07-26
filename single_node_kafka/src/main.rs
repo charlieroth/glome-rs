@@ -1,12 +1,18 @@
 use maelstrom::simple_log::Logs;
 use maelstrom::{Message, MessageBody};
-use std::io::{self, BufRead, BufReader};
-use tokio::sync::mpsc;
+use tokio::{
+    io::{self, AsyncBufReadExt, BufReader},
+    sync::mpsc,
+};
 
 struct Node {
+    /// Unique node identifier
     id: String,
+    /// Peer node IDs for gossip
     peers: Vec<String>,
+    /// Message counter for generating unique msg_ids
     msg_id: u64,
+    /// Append-only logs
     logs: Logs,
 }
 
@@ -20,22 +26,23 @@ impl Node {
         }
     }
 
-    async fn handle_init(&mut self, node_id: String, node_ids: Vec<String>) {
+    fn handle_init(&mut self, node_id: String, node_ids: Vec<String>) {
         self.id = node_id.clone();
         self.peers = node_ids.clone();
         self.peers.retain(|p| p != &self.id);
     }
 
-    async fn process_message(&mut self, message: Message) -> Option<Message> {
+    fn process_message(&mut self, message: Message) -> Vec<Message> {
+        let mut out: Vec<Message> = Vec::new();
         self.msg_id += 1;
-        match message.body {
+        match message.body.clone() {
             MessageBody::Init {
                 msg_id,
                 node_id,
                 node_ids,
             } => {
-                self.handle_init(node_id, node_ids).await;
-                Some(Message {
+                self.handle_init(node_id, node_ids);
+                out.push(Message {
                     src: self.id.clone(),
                     dest: message.src,
                     body: MessageBody::InitOk {
@@ -46,7 +53,7 @@ impl Node {
             }
             MessageBody::Send { msg_id, key, msg } => {
                 let offset = self.logs.append(&key, msg);
-                Some(Message {
+                out.push(Message {
                     src: self.id.clone(),
                     dest: message.src,
                     body: MessageBody::SendOk {
@@ -58,7 +65,7 @@ impl Node {
             }
             MessageBody::Poll { msg_id, offsets } => {
                 let msgs = self.logs.poll(&offsets);
-                Some(Message {
+                out.push(Message {
                     src: self.id.clone(),
                     dest: message.src,
                     body: MessageBody::PollOk {
@@ -70,7 +77,7 @@ impl Node {
             }
             MessageBody::CommitOffsets { msg_id, offsets } => {
                 self.logs.commit_offsets(offsets);
-                Some(Message {
+                out.push(Message {
                     src: self.id.clone(),
                     dest: message.src,
                     body: MessageBody::CommitOffsetsOk {
@@ -81,18 +88,19 @@ impl Node {
             }
             MessageBody::ListCommittedOffsets { msg_id, keys } => {
                 let offsets = self.logs.list_committed_offsets(&keys);
-                Some(Message {
+                out.push(Message {
                     src: self.id.clone(),
                     dest: message.src,
                     body: MessageBody::ListCommittedOffsetsOk {
                         msg_id: self.msg_id,
                         in_reply_to: msg_id,
-                        offsets
-                    }
+                        offsets,
+                    },
                 })
             }
-            _ => None,
+            _ => {}
         }
+        out
     }
 }
 
@@ -104,19 +112,17 @@ async fn main() {
     // Spawn stdin reader
     let stdin_tx = tx.clone();
     tokio::spawn(async move {
-        let stdin = io::stdin();
-        let reader = BufReader::new(stdin);
-        for line in reader.lines() {
-            if let Ok(line) = line {
-                if let Ok(msg) = serde_json::from_str::<Message>(&line) {
-                    let _ = stdin_tx.send(msg).await;
-                }
+        let reader = BufReader::new(io::stdin());
+        let mut lines = reader.lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            if let Ok(msg) = serde_json::from_str::<Message>(&line) {
+                let _ = stdin_tx.send(msg).await;
             }
         }
     });
 
     while let Some(msg) = rx.recv().await {
-        if let Some(response) = node.process_message(msg).await {
+        for response in node.process_message(msg) {
             let response_str = serde_json::to_string(&response).unwrap();
             println!("{response_str}");
         }
