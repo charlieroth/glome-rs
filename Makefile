@@ -1,4 +1,4 @@
-.PHONY: tarut tarct
+.PHONY: echoer unique-id snb mnb ftb eb-one eb-two goc sn-kafka mn-kafka e-kafka sn-tat tarut tarut-partition tarct
 
 echoer:
 	maelstrom test -w echo --bin ./target/debug/echo --node-count 1 --time-limit 10
