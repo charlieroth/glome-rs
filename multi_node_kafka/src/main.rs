@@ -49,7 +49,13 @@ impl Node {
         self.leader = all[0].clone();
     }
 
-    fn handle_send(&mut self, message: Message, msg_id: u64, key: String, msg: u64) -> Vec<Message> {
+    fn handle_send(
+        &mut self,
+        message: Message,
+        msg_id: u64,
+        key: String,
+        msg: u64,
+    ) -> Vec<Message> {
         let mut out: Vec<Message> = Vec::new();
         if self.id != self.leader {
             out.push(Message {
@@ -66,11 +72,14 @@ impl Node {
         } else {
             let offset = self.logs.append_local(&key, msg);
             self.next_offset = offset + 1;
-            self.pendings.insert(offset, Pending {
-                client: message.src.clone(),
-                client_msg_id: msg_id,
-                acks: 1,
-            });
+            self.pendings.insert(
+                offset,
+                Pending {
+                    client: message.src.clone(),
+                    client_msg_id: msg_id,
+                    acks: 1,
+                },
+            );
             for peer in &self.peers {
                 out.push(Message {
                     src: self.id.clone(),
@@ -79,8 +88,8 @@ impl Node {
                         msg_id: self.msg_id,
                         key: key.clone(),
                         msg,
-                        offset
-                    }
+                        offset,
+                    },
                 })
             }
             if self.quorum() <= 1 {
@@ -91,7 +100,7 @@ impl Node {
                         msg_id: self.msg_id,
                         in_reply_to: msg_id,
                         offset,
-                    }
+                    },
                 });
                 self.pendings.remove(&offset);
             }
@@ -123,7 +132,13 @@ impl Node {
                 let msgs = self.handle_send(message.clone(), msg_id, key.clone(), msg);
                 out.extend(msgs);
             }
-            MessageBody::ForwardSend { msg_id, orig_src, orig_msg_id, key, msg } => {
+            MessageBody::ForwardSend {
+                msg_id: _,
+                orig_src,
+                orig_msg_id,
+                key,
+                msg,
+            } => {
                 // leader handles forwarded same as `Send`
                 // reuse above by recursive call
                 let fwd = Message {
@@ -132,12 +147,17 @@ impl Node {
                     body: MessageBody::Send {
                         msg_id: orig_msg_id,
                         key,
-                        msg
-                    }
+                        msg,
+                    },
                 };
                 out.extend(self.handle(fwd));
             }
-            MessageBody::Replicate { msg_id, key, msg, offset } => {
+            MessageBody::Replicate {
+                msg_id,
+                key,
+                msg,
+                offset,
+            } => {
                 self.logs.insert_at(&key, offset, msg);
                 out.push(Message {
                     src: self.id.clone(),
@@ -146,10 +166,14 @@ impl Node {
                         msg_id: self.msg_id,
                         in_reply_to: msg_id,
                         offset,
-                    }
+                    },
                 })
             }
-            MessageBody::ReplicateOk { msg_id, in_reply_to, offset } => {
+            MessageBody::ReplicateOk {
+                msg_id: _,
+                in_reply_to: _,
+                offset,
+            } => {
                 // Grab quorum once, before get_mut()
                 let quorum = self.quorum();
                 // Mutably borrow the pending entry and bump acks
@@ -158,7 +182,11 @@ impl Node {
                     // Check against the pre-computed quorum
                     if p.acks >= quorum {
                         // Take ownership of the Pending so we drop the &mut borrow
-                        let Pending { client, client_msg_id, .. } = self.pendings.remove(&offset).unwrap();
+                        let Pending {
+                            client,
+                            client_msg_id,
+                            ..
+                        } = self.pendings.remove(&offset).unwrap();
                         // Now safe to immutably borrow `self` to build the response
                         out.push(Message {
                             src: self.id.clone(),
@@ -166,8 +194,8 @@ impl Node {
                             body: MessageBody::SendOk {
                                 msg_id: self.msg_id,
                                 in_reply_to: client_msg_id,
-                                offset
-                            }
+                                offset,
+                            },
                         });
                     }
                 }

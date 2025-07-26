@@ -96,7 +96,10 @@ impl Node {
                     },
                 })
             }
-            MessageBody::Topology { msg_id, topology } => Some(Message {
+            MessageBody::Topology {
+                msg_id,
+                topology: _,
+            } => Some(Message {
                 src: self.id.clone(),
                 dest: msg.src,
                 body: MessageBody::TopologyOk {
@@ -115,7 +118,10 @@ impl Node {
                     },
                 })
             }
-            MessageBody::BroadcastGossip { msg_id, messages } => {
+            MessageBody::BroadcastGossip {
+                msg_id: _,
+                messages,
+            } => {
                 self.handle_broadcast_gossip(messages).await;
                 None
             }

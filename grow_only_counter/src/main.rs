@@ -107,7 +107,10 @@ impl Node {
                     },
                 })
             }
-            MessageBody::CounterGossip { msg_id, counters } => {
+            MessageBody::CounterGossip {
+                msg_id: _,
+                counters,
+            } => {
                 self.handle_counter_gossip(counters).await;
                 None
             }
