@@ -1,10 +1,9 @@
 use maelstrom::{Message, MessageBody};
-use std::hash::{Hash, Hasher};
-use std::collections::hash_map::DefaultHasher;
 use tokio::{
     sync::mpsc,
     io::{self, AsyncBufReadExt, BufReader}
 };
+use rand::Rng;
 
 struct Node {
     /// Unique node identifier
@@ -30,17 +29,8 @@ impl Node {
         self.peers.retain(|p| p != &self.id);
     }
 
-    fn handle_generate(&self, msg_id: u64) -> u64 {
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos() as u64;
-        let mut hasher = DefaultHasher::new();
-        let node_id = self.id.clone();
-        node_id.hash(&mut hasher);
-        msg_id.hash(&mut hasher);
-        timestamp.hash(&mut hasher);
-        hasher.finish()
+    fn handle_generate(&self, _msg_id: u64) -> u64 {
+        rand::rng().random::<u64>()
     }
 
     fn process_message(&mut self, msg: Message) -> Vec<Message> {

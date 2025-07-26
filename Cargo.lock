@@ -482,6 +482,7 @@ name = "uniqueids"
 version = "0.1.0"
 dependencies = [
  "maelstrom",
+ "rand",
  "serde",
  "serde_json",
  "tokio",
