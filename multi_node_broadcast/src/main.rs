@@ -16,6 +16,8 @@ struct Node {
     msg_id: u64,
     /// Node messages
     messages: HashSet<u64>,
+    /// Seen gossip message IDs to prevent re-processing
+    seen_gossip_msgs: HashSet<(String, u64)>,
 }
 
 impl Node {
@@ -25,6 +27,7 @@ impl Node {
             peers: Vec::new(),
             msg_id: 0,
             messages: HashSet::new(),
+            seen_gossip_msgs: HashSet::new(),
         }
     }
 
@@ -68,7 +71,18 @@ impl Node {
         out
     }
 
-    fn handle_broadcast_gossip(&mut self, messages: Vec<u64>) {
+    fn handle_broadcast_gossip(&mut self, src: &str, msg_id: u64, messages: Vec<u64>) {
+        let gossip_key = (src.to_string(), msg_id);
+        
+        // Skip if we've already processed this gossip message
+        if self.seen_gossip_msgs.contains(&gossip_key) {
+            return;
+        }
+        
+        // Mark this gossip message as seen
+        self.seen_gossip_msgs.insert(gossip_key);
+        
+        // Process the broadcast messages
         for message in messages {
             self.messages.insert(message);
         }
@@ -124,10 +138,10 @@ impl Node {
                 })
             }
             MessageBody::BroadcastGossip {
-                msg_id: _,
+                msg_id,
                 messages,
             } => {
-                self.handle_broadcast_gossip(messages);
+                self.handle_broadcast_gossip(&msg.src, msg_id, messages);
             }
             MessageBody::Read { msg_id } => {
                 let messages = self.handle_read();
