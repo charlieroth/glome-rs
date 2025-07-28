@@ -1,97 +1,48 @@
-use maelstrom::{Message, MessageBody};
-use rand::Rng;
-use tokio::{
-    io::{self, AsyncBufReadExt, BufReader},
-    sync::mpsc,
+use maelstrom::{
+    Message, MessageBody,
+    node::{MessageHandler, Node, run_node},
 };
+use rand::Rng;
 
-struct Node {
-    /// Unique node identifier
-    id: String,
-    /// Peer node IDs for gossip
-    peers: Vec<String>,
-    /// Message counter for generating unique msg_ids
-    msg_id: u64,
-}
+struct UniqueIdNode;
 
-impl Node {
-    fn new() -> Self {
-        Self {
-            id: String::new(),
-            peers: Vec::new(),
-            msg_id: 0,
-        }
-    }
-
-    fn handle_init(&mut self, node_id: String, node_ids: Vec<String>) {
-        self.id = node_id.clone();
-        self.peers = node_ids.clone();
-        self.peers.retain(|p| p != &self.id);
-    }
-
+impl UniqueIdNode {
     fn handle_generate(&self, _msg_id: u64) -> u64 {
         rand::rng().random::<u64>()
     }
+}
 
-    fn handle(&mut self, msg: Message) -> Vec<Message> {
+impl MessageHandler for UniqueIdNode {
+    fn handle(&mut self, node: &mut Node, message: Message) -> Vec<Message> {
         let mut out: Vec<Message> = Vec::new();
-        self.msg_id += 1;
-        match msg.body.clone() {
+        match message.body {
             MessageBody::Init {
                 msg_id,
                 node_id,
                 node_ids,
             } => {
-                self.handle_init(node_id, node_ids);
-                out.push(Message {
-                    src: self.id.clone(),
-                    dest: msg.src,
-                    body: MessageBody::InitOk {
-                        msg_id: self.msg_id,
-                        in_reply_to: msg_id,
-                    },
-                })
+                node.handle_init(node_id, node_ids);
+                out.push(node.init_ok(message.src, msg_id));
             }
             MessageBody::Generate { msg_id } => {
                 let unique_id = self.handle_generate(msg_id);
-                out.push(Message {
-                    src: self.id.clone(),
-                    dest: msg.src,
-                    body: MessageBody::GenerateOk {
-                        msg_id: self.msg_id,
+                let response_msg_id = node.next_msg_id();
+                out.push(node.reply(
+                    message.src,
+                    MessageBody::GenerateOk {
+                        msg_id: response_msg_id,
                         in_reply_to: msg_id,
                         id: unique_id,
                     },
-                })
+                ));
             }
             _ => {}
         }
-
         out
     }
 }
 
 #[tokio::main]
 async fn main() {
-    let mut node = Node::new();
-    let (tx, mut rx) = mpsc::channel::<Message>(1000);
-
-    // Spawn stdin reader
-    let stdin_tx = tx.clone();
-    tokio::spawn(async move {
-        let reader = BufReader::new(io::stdin());
-        let mut lines = reader.lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            if let Ok(msg) = serde_json::from_str::<Message>(&line) {
-                let _ = stdin_tx.send(msg).await;
-            }
-        }
-    });
-
-    while let Some(msg) = rx.recv().await {
-        for response in node.handle(msg) {
-            let response_str = serde_json::to_string(&response).unwrap();
-            println!("{response_str}");
-        }
-    }
+    run_node(UniqueIdNode).await;
 }
