@@ -12,31 +12,13 @@ environments, inject network failures, and verify that implementations maintain
 correctness under various failure conditions.
 
 This repository tackles every exercise in the
-[Fly.io "Gossip Glomers"](https://fly.io/dist-sys/) course. Each sub-crate is a
-**stand-alone binary** that speaks
+[Fly.io "Gossip Glomers"](https://fly.io/dist-sys/) course.
+
+Each sub-crate is a **stand-alone binary** that speaks
 [Maelstrom](https://github.com/jepsen-io/maelstrom)'s JSON protocol over
 STDIN/STDOUT, while the shared `maelstrom` library provides strongly-typed
 message definitions, helper data-structures, and a few pieces of reusable logic
 (e.g. an append-only log and a CRDT G-Counter).
-
-```
-┌───────────────────────────── workspace ─────────────────────────────┐
-│ echo/                    # 01 – Echo                                │
-│ uniqueids/               # 02 – Unique IDs                          │
-│ single_node_broadcast/   # 03a – Broadcast (single-node)            │
-│ multi_node_broadcast/    # 03b-e – Broadcast (multi-node, fault-tol)│
-│ grow_only_counter/       # 04 – G-Counter CRDT                      │
-│ single_node_kafka/       # 05a – Log (single-node)                  │
-│ multi_node_kafka/        # 05b-c – Replicated log / quorum acks     │
-│ single_node_tat/         # 06a – Txn, totally-available, R-U        │
-│ tarut/                   # 06b-c – Txn with read-uncommitted + net  │
-│ tarct/                   # 06d – Txn with read-committed            │
-│ maelstrom/               # Shared library                           │
-└─────────────────────────────────────────────────────────────────────┘
-```
-
-Every binary is intentionally **dependency-free** beyond Tokio & Serde so that
-the core algorithmic ideas are easy to study.
 
 ## Learning Objectives
 
@@ -77,43 +59,6 @@ Tokio channels are used internally for back-pressure and to decouple IO from the
 per-message state machine, but **all network IO is still just stdio** so it
 integrates cleanly with Maelstrom.
 
-## Technical Features
+## Maelstrom Testing
 
-- **Serde-tagged enums** give zero-copy (de)serialisation of the entire
-  Maelstrom protocol with exhaustive pattern-matching in every node.
-- **Deterministic logical clocks** (`msg_id`) created per-node, avoiding the
-  need for mutexes or atomics.
-- **Gossip helpers** (`gossip()` functions) that periodically fan-out state
-  using `tokio::time::interval`, allowing loss-tolerant propagation.
-- **CRDT merge logic** lives in the library and is shared by counter nodes and
-  transaction replicas, reducing copy-paste.
-- **Quorum write & ACK tracking** in the Kafka replica (`multi_node_kafka`)
-  keeps opaque `Pending` structs indexed by offset for O(1) completion checks.
-- **Optimistic transaction engine** in _tarct_ keeps per-key versions and uses
-  conflict-checking plus write-set replication for _read-committed_ semantics
-  while remaining totally available.
-- **Makefile test-targets** wire up the official Jepsen/Maelstrom harness so
-  `make tarct` etc. spin everything up, run the Jepsen workload and assert
-  linearizability / causal-consistency automatically.
-
-## Building and Testing
-
-### Maelstrom Integration Tests
-
-```bash
-make echoer                    # Challenge 1: Echo 
-make unique-id                 # Challenge 2: Unique ID Generation 
-make snb                       # Challenge 3a: Single-Node Broadcast 
-make mnb                       # Challenge 3b: Multi-Node Broadcast 
-make ftb                       # Challenge 3c: Fault-Tolerant Broadcast
-make eb-one                    # Challenge 3d: Efficient Broadcast (scenario 1)
-make eb-two                    # Challenge 3e: Efficient Broadcast (scenario 2) 
-make goc                       # Challenge 4: Grow-Only Counter 
-make sn-kafka                  # Challenge 5a: Single-Node Kafka-Style Log
-make mn-kafka                  # Challenge 5b: Multi-Node Kafka-Style Log 
-make e-kafka                   # Challenge 5c: Efficient Kafka-Style Log 
-make sn-tat                    # Challenge 6a: Single-Node Totally-Available Transactions
-make tarut                     # Challenge 6b: Totally-Available, Read Uncommitted Transactions
-make tarut-partition           # Challenge 6c: Totally-Available, Read Uncommitted Transactions with Network Partitioning
-make tarct                     # Challenge 6d: Totally-Available, Read Committed Transactions
-```
+See `Makefile` for how to run the Maelstrom tool against the different Rust binaries that this project produces
