@@ -117,7 +117,7 @@ impl Node {
         out
     }
 
-    fn process_message(&mut self, message: Message) -> Vec<Message> {
+    fn handle(&mut self, message: Message) -> Vec<Message> {
         let mut out = Vec::new();
         self.msg_id += 1;
         match message.body.clone() {
@@ -158,7 +158,7 @@ impl Node {
                         msg,
                     },
                 };
-                out.extend(self.process_message(fwd));
+                out.extend(self.handle(fwd));
             }
             MessageBody::Replicate {
                 msg_id,
@@ -267,7 +267,7 @@ async fn main() {
     });
 
     while let Some(msg) = rx.recv().await {
-        for response in node.process_message(msg) {
+        for response in node.handle(msg) {
             let response_str = serde_json::to_string(&response).unwrap();
             println!("{response_str}");
         }

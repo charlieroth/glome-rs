@@ -1,8 +1,8 @@
 use maelstrom::{ErrorCode, Message, MessageBody};
 use std::collections::HashMap;
 use tokio::{
+    io::{self, AsyncBufReadExt, BufReader},
     sync::mpsc,
-    io::{self, AsyncBufReadExt, BufReader}
 };
 
 struct KV {
@@ -119,7 +119,7 @@ impl Node {
             if current_version != seen_version {
                 self.msg_id += 1;
                 // abort on conflict
-                out.push(Message{
+                out.push(Message {
                     src: self.id.clone(),
                     dest: message.src.clone(),
                     body: MessageBody::Error {
@@ -127,8 +127,8 @@ impl Node {
                         in_reply_to: msg_id,
                         code: ErrorCode::TxnConflict,
                         text: Some("Transaction aborted. Conflict detected".into()),
-                        extra: None
-                    }
+                        extra: None,
+                    },
                 })
             }
         }
@@ -174,7 +174,7 @@ impl Node {
         out
     }
 
-    fn process_message(&mut self, message: Message) -> Vec<Message> {
+    fn handle(&mut self, message: Message) -> Vec<Message> {
         let mut out: Vec<Message> = Vec::new();
         self.msg_id += 1;
         match message.body.clone() {
@@ -232,7 +232,7 @@ async fn main() {
     });
 
     while let Some(msg) = rx.recv().await {
-        for response in node.process_message(msg){
+        for response in node.handle(msg) {
             let response_str = serde_json::to_string(&response).unwrap();
             println!("{response_str}");
         }

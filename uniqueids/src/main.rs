@@ -1,9 +1,9 @@
 use maelstrom::{Message, MessageBody};
-use tokio::{
-    sync::mpsc,
-    io::{self, AsyncBufReadExt, BufReader}
-};
 use rand::Rng;
+use tokio::{
+    io::{self, AsyncBufReadExt, BufReader},
+    sync::mpsc,
+};
 
 struct Node {
     /// Unique node identifier
@@ -33,7 +33,7 @@ impl Node {
         rand::rng().random::<u64>()
     }
 
-    fn process_message(&mut self, msg: Message) -> Vec<Message> {
+    fn handle(&mut self, msg: Message) -> Vec<Message> {
         let mut out: Vec<Message> = Vec::new();
         self.msg_id += 1;
         match msg.body.clone() {
@@ -60,11 +60,11 @@ impl Node {
                     body: MessageBody::GenerateOk {
                         msg_id: self.msg_id,
                         in_reply_to: msg_id,
-                        id: unique_id
-                    }
+                        id: unique_id,
+                    },
                 })
             }
-            _ => {},
+            _ => {}
         }
 
         out
@@ -89,11 +89,9 @@ async fn main() {
     });
 
     while let Some(msg) = rx.recv().await {
-        for response in node.process_message(msg){
+        for response in node.handle(msg) {
             let response_str = serde_json::to_string(&response).unwrap();
             println!("{response_str}");
         }
     }
-
 }
-

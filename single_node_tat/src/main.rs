@@ -65,7 +65,7 @@ impl Node {
         self.peers.retain(|p| p != &self.id);
     }
 
-    fn process_message(&mut self, message: Message) -> Vec<Message> {
+    fn handle(&mut self, message: Message) -> Vec<Message> {
         let mut out: Vec<Message> = Vec::new();
         self.msg_id += 1;
         match message.body {
@@ -120,7 +120,7 @@ async fn main() {
     });
 
     while let Some(msg) = rx.recv().await {
-        for response in node.process_message(msg) {
+        for response in node.handle(msg) {
             let response_str = serde_json::to_string(&response).unwrap();
             println!("{response_str}");
         }
