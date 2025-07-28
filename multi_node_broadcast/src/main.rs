@@ -1,6 +1,6 @@
 use maelstrom::{Message, MessageBody};
 use rand::seq::SliceRandom;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use tokio::{
     io::{self, AsyncBufReadExt, BufReader},
     sync::mpsc,
@@ -16,10 +16,6 @@ struct Node {
     msg_id: u64,
     /// Node messages
     messages: HashSet<u64>,
-    /// Seen gossip message IDs to prevent re-processing
-    seen_gossip_msgs: HashSet<(String, u64)>,
-    /// Track what messages each peer has seen (for delta gossip)
-    peer_messages: HashMap<String, HashSet<u64>>,
 }
 
 impl Node {
@@ -29,8 +25,6 @@ impl Node {
             peers: Vec::new(),
             msg_id: 0,
             messages: HashSet::new(),
-            seen_gossip_msgs: HashSet::new(),
-            peer_messages: HashMap::new(),
         }
     }
 
@@ -52,11 +46,6 @@ impl Node {
         self.id = node_id.clone();
         self.peers = node_ids.clone();
         self.peers = self.construct_k_regular_neighbors(4);
-        
-        // Initialize peer message tracking
-        for peer in &self.peers {
-            self.peer_messages.insert(peer.clone(), HashSet::new());
-        }
     }
 
     fn gossip(&mut self) -> Vec<Message> {
@@ -67,55 +56,21 @@ impl Node {
 
         self.msg_id += 1;
         for peer in self.peers.iter() {
-            // Calculate delta: messages this peer hasn't seen yet
-            let peer_seen = self.peer_messages.get(peer).cloned().unwrap_or_default();
-            let new_messages: Vec<u64> = self.messages
-                .difference(&peer_seen)
-                .cloned()
-                .collect();
-            
-            // Only send gossip if there are new messages for this peer
-            if !new_messages.is_empty() {
-                // Update our record of what this peer has seen
-                let peer_messages = self.peer_messages.entry(peer.clone()).or_default();
-                for msg in &new_messages {
-                    peer_messages.insert(*msg);
-                }
-                
-                out.push(Message {
-                    src: self.id.clone(),
-                    dest: peer.clone(),
-                    body: MessageBody::BroadcastGossip {
-                        msg_id: self.msg_id,
-                        messages: new_messages,
-                    },
-                });
-            }
+            out.push(Message {
+                src: self.id.clone(),
+                dest: peer.clone(),
+                body: MessageBody::BroadcastGossip {
+                    msg_id: self.msg_id,
+                    messages: self.messages.iter().cloned().collect(),
+                },
+            });
         }
         out
     }
 
-    fn handle_broadcast_gossip(&mut self, src: &str, msg_id: u64, messages: Vec<u64>) {
-        let gossip_key = (src.to_string(), msg_id);
-        
-        // Skip if we've already processed this gossip message
-        if self.seen_gossip_msgs.contains(&gossip_key) {
-            return;
-        }
-        
-        // Mark this gossip message as seen
-        self.seen_gossip_msgs.insert(gossip_key);
-        
-        // Process the broadcast messages
-        for message in &messages {
-            self.messages.insert(*message);
-        }
-        
-        // Update our knowledge of what the sender has seen
-        // (they have at least the messages they just sent us)
-        let sender_messages = self.peer_messages.entry(src.to_string()).or_default();
-        for message in &messages {
-            sender_messages.insert(*message);
+    fn handle_broadcast_gossip(&mut self, messages: Vec<u64>) {
+        for message in messages {
+            self.messages.insert(message);
         }
     }
 
@@ -169,10 +124,10 @@ impl Node {
                 })
             }
             MessageBody::BroadcastGossip {
-                msg_id,
+                msg_id: _,
                 messages,
             } => {
-                self.handle_broadcast_gossip(&msg.src, msg_id, messages);
+                self.handle_broadcast_gossip(messages);
             }
             MessageBody::Read { msg_id } => {
                 let messages = self.handle_read();
