@@ -1,10 +1,9 @@
 use maelstrom::log::Logs;
-use maelstrom::{Message, MessageBody};
-use std::collections::HashMap;
-use tokio::{
-    io::{self, AsyncBufReadExt, BufReader},
-    sync::mpsc,
+use maelstrom::{
+    Message, MessageBody,
+    node::{MessageHandler, Node, run_node},
 };
+use std::collections::HashMap;
 
 struct Pending {
     client: String,
@@ -12,13 +11,7 @@ struct Pending {
     acks: usize,
 }
 
-struct Node {
-    /// Unique node identifier
-    id: String,
-    /// Peer node IDs for gossip
-    peers: Vec<String>,
-    /// Message counter for generating unique msg_ids
-    msg_id: u64,
+struct KafkaNode {
     /// Current leader node ID in the cluster
     leader: String,
     /// Next offset for node to use
@@ -29,12 +22,9 @@ struct Node {
     pendings: HashMap<u64, Pending>,
 }
 
-impl Node {
+impl KafkaNode {
     fn new() -> Self {
         Self {
-            id: String::new(),
-            peers: Vec::new(),
-            msg_id: 0,
             leader: String::new(),
             next_offset: 0,
             logs: Logs::new(),
@@ -42,17 +32,12 @@ impl Node {
         }
     }
 
-    fn quorum(&self) -> usize {
-        self.peers.len().div_ceil(2) + 1
+    fn quorum(&self, node: &Node) -> usize {
+        node.peers.len().div_ceil(2) + 1
     }
 
-    fn handle_init(&mut self, node_id: String, node_ids: Vec<String>) {
-        self.id = node_id.clone();
-        self.peers = node_ids
-            .iter()
-            .filter(|p| *p != &self.id)
-            .cloned()
-            .collect();
+    fn handle_init(&mut self, node: &mut Node, node_id: String, node_ids: Vec<String>) {
+        node.handle_init(node_id.clone(), node_ids.clone());
         let mut all = node_ids.clone();
         all.sort();
         self.leader = all[0].clone();
@@ -60,18 +45,19 @@ impl Node {
 
     fn handle_send(
         &mut self,
+        node: &mut Node,
         message: Message,
         msg_id: u64,
         key: String,
         msg: u64,
     ) -> Vec<Message> {
         let mut out: Vec<Message> = Vec::new();
-        if self.id != self.leader {
+        if node.id != self.leader {
             out.push(Message {
-                src: self.id.clone(),
+                src: node.id.clone(),
                 dest: self.leader.clone(),
                 body: MessageBody::ForwardSend {
-                    msg_id: self.msg_id,
+                    msg_id: node.next_msg_id(),
                     orig_src: message.src,
                     orig_msg_id: msg_id,
                     key,
@@ -89,24 +75,26 @@ impl Node {
                     acks: 1,
                 },
             );
-            for peer in &self.peers {
+            let peers = node.peers.clone();
+            for peer in peers {
+                let msg_id = node.next_msg_id();
                 out.push(Message {
-                    src: self.id.clone(),
-                    dest: peer.clone(),
+                    src: node.id.clone(),
+                    dest: peer,
                     body: MessageBody::Replicate {
-                        msg_id: self.msg_id,
+                        msg_id,
                         key: key.clone(),
                         msg,
                         offset,
                     },
                 })
             }
-            if self.quorum() <= 1 {
+            if self.quorum(node) <= 1 {
                 out.push(Message {
-                    src: self.id.clone(),
+                    src: node.id.clone(),
                     dest: message.src,
                     body: MessageBody::SendOk {
-                        msg_id: self.msg_id,
+                        msg_id: node.next_msg_id(),
                         in_reply_to: msg_id,
                         offset,
                     },
@@ -116,28 +104,22 @@ impl Node {
         }
         out
     }
+}
 
-    fn handle(&mut self, message: Message) -> Vec<Message> {
+impl MessageHandler for KafkaNode {
+    fn handle(&mut self, node: &mut Node, message: Message) -> Vec<Message> {
         let mut out = Vec::new();
-        self.msg_id += 1;
         match message.body.clone() {
             MessageBody::Init {
                 msg_id,
                 node_id,
                 node_ids,
             } => {
-                self.handle_init(node_id, node_ids);
-                out.push(Message {
-                    src: self.id.clone(),
-                    dest: message.src,
-                    body: MessageBody::InitOk {
-                        msg_id: self.msg_id,
-                        in_reply_to: msg_id,
-                    },
-                })
+                self.handle_init(node, node_id, node_ids);
+                out.push(node.init_ok(message.src, msg_id));
             }
             MessageBody::Send { msg_id, key, msg } => {
-                let msgs = self.handle_send(message.clone(), msg_id, key.clone(), msg);
+                let msgs = self.handle_send(node, message.clone(), msg_id, key.clone(), msg);
                 out.extend(msgs);
             }
             MessageBody::ForwardSend {
@@ -151,14 +133,14 @@ impl Node {
                 // reuse above by recursive call
                 let fwd = Message {
                     src: orig_src,
-                    dest: self.id.clone(),
+                    dest: node.id.clone(),
                     body: MessageBody::Send {
                         msg_id: orig_msg_id,
                         key,
                         msg,
                     },
                 };
-                out.extend(self.handle(fwd));
+                out.extend(self.handle(node, fwd));
             }
             MessageBody::Replicate {
                 msg_id,
@@ -167,15 +149,15 @@ impl Node {
                 offset,
             } => {
                 self.logs.insert_at(&key, offset, msg);
-                out.push(Message {
-                    src: self.id.clone(),
-                    dest: message.src,
-                    body: MessageBody::ReplicateOk {
-                        msg_id: self.msg_id,
+                let reply_msg_id = node.next_msg_id();
+                out.push(node.reply(
+                    message.src,
+                    MessageBody::ReplicateOk {
+                        msg_id: reply_msg_id,
                         in_reply_to: msg_id,
                         offset,
                     },
-                })
+                ))
             }
             MessageBody::ReplicateOk {
                 msg_id: _,
@@ -183,7 +165,7 @@ impl Node {
                 offset,
             } => {
                 // Grab quorum once, before get_mut()
-                let quorum = self.quorum();
+                let quorum = self.quorum(node);
                 // Mutably borrow the pending entry and bump acks
                 if let Some(p) = self.pendings.get_mut(&offset) {
                     p.acks += 1;
@@ -196,52 +178,52 @@ impl Node {
                             ..
                         } = self.pendings.remove(&offset).unwrap();
                         // Now safe to immutably borrow `self` to build the response
-                        out.push(Message {
-                            src: self.id.clone(),
-                            dest: client,
-                            body: MessageBody::SendOk {
-                                msg_id: self.msg_id,
+                        let reply_msg_id = node.next_msg_id();
+                        out.push(node.reply(
+                            client,
+                            MessageBody::SendOk {
+                                msg_id: reply_msg_id,
                                 in_reply_to: client_msg_id,
                                 offset,
                             },
-                        });
+                        ));
                     }
                 }
             }
             MessageBody::Poll { msg_id, offsets } => {
                 let msgs = self.logs.poll(&offsets);
-                out.push(Message {
-                    src: self.id.clone(),
-                    dest: message.src,
-                    body: MessageBody::PollOk {
-                        msg_id: self.msg_id,
+                let reply_msg_id = node.next_msg_id();
+                out.push(node.reply(
+                    message.src,
+                    MessageBody::PollOk {
+                        msg_id: reply_msg_id,
                         in_reply_to: msg_id,
                         msgs,
                     },
-                })
+                ))
             }
             MessageBody::CommitOffsets { msg_id, offsets } => {
                 self.logs.commit_offsets(offsets);
-                out.push(Message {
-                    src: self.id.clone(),
-                    dest: message.src,
-                    body: MessageBody::CommitOffsetsOk {
-                        msg_id: self.msg_id,
+                let reply_msg_id = node.next_msg_id();
+                out.push(node.reply(
+                    message.src,
+                    MessageBody::CommitOffsetsOk {
+                        msg_id: reply_msg_id,
                         in_reply_to: msg_id,
                     },
-                })
+                ))
             }
             MessageBody::ListCommittedOffsets { msg_id, keys } => {
                 let offsets = self.logs.list_committed_offsets(&keys);
-                out.push(Message {
-                    src: self.id.clone(),
-                    dest: message.src,
-                    body: MessageBody::ListCommittedOffsetsOk {
-                        msg_id: self.msg_id,
+                let reply_msg_id = node.next_msg_id();
+                out.push(node.reply(
+                    message.src,
+                    MessageBody::ListCommittedOffsetsOk {
+                        msg_id: reply_msg_id,
                         in_reply_to: msg_id,
                         offsets,
                     },
-                })
+                ))
             }
             _ => {}
         }
@@ -251,25 +233,6 @@ impl Node {
 
 #[tokio::main]
 async fn main() {
-    let mut node = Node::new();
-    let (tx, mut rx) = mpsc::channel::<Message>(32);
-
-    // Spawn stdin reader
-    let stdin_tx = tx.clone();
-    tokio::spawn(async move {
-        let reader = BufReader::new(io::stdin());
-        let mut lines = reader.lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            if let Ok(msg) = serde_json::from_str::<Message>(&line) {
-                let _ = stdin_tx.send(msg).await;
-            }
-        }
-    });
-
-    while let Some(msg) = rx.recv().await {
-        for response in node.handle(msg) {
-            let response_str = serde_json::to_string(&response).unwrap();
-            println!("{response_str}");
-        }
-    }
+    let handler = KafkaNode::new();
+    run_node(handler).await;
 }
