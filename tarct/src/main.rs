@@ -1,9 +1,6 @@
+use maelstrom::node::{MessageHandler, Node, run_node};
 use maelstrom::{ErrorCode, Message, MessageBody};
 use std::collections::HashMap;
-use tokio::{
-    io::{self, AsyncBufReadExt, BufReader},
-    sync::mpsc,
-};
 
 struct KV {
     /// Committed values: key -> optional value
@@ -48,38 +45,24 @@ impl KV {
     }
 }
 
-struct Node {
-    /// Unique node identifier
-    id: String,
-    /// Peer node IDs for gossip
-    peers: Vec<String>,
-    /// Message counter for generating unique msg_ids
-    msg_id: u64,
+struct TarctHandler {
     /// Committed key-value store with version tracking
     kv: KV,
     /// Logical clock for local commits
     commit_ts: u64,
 }
 
-impl Node {
+impl TarctHandler {
     fn new() -> Self {
         Self {
-            id: String::new(),
-            peers: Vec::new(),
-            msg_id: 0,
             kv: KV::new(),
             commit_ts: 0,
         }
     }
 
-    fn handle_init(&mut self, node_id: String, node_ids: Vec<String>) {
-        self.id = node_id.clone();
-        self.peers = node_ids.clone();
-        self.peers.retain(|p| p != &self.id);
-    }
-
     fn handle_tx(
         &mut self,
+        node: &mut Node,
         message: Message,
         msg_id: u64,
         txn: Vec<(String, u64, Option<u64>)>,
@@ -117,13 +100,12 @@ impl Node {
         for (&key, &seen_version) in read_set.iter() {
             let current_version = self.kv.version(&key);
             if current_version != seen_version {
-                self.msg_id += 1;
                 // abort on conflict
                 out.push(Message {
-                    src: self.id.clone(),
+                    src: node.id.clone(),
                     dest: message.src.clone(),
                     body: MessageBody::Error {
-                        msg_id: self.msg_id,
+                        msg_id: node.next_msg_id(),
                         in_reply_to: msg_id,
                         code: ErrorCode::TxnConflict,
                         text: Some("Transaction aborted. Conflict detected".into()),
@@ -147,25 +129,24 @@ impl Node {
             .map(|(&key, &val)| ("w".to_string(), key, val, this_ts))
             .collect();
 
-        for peer in &self.peers {
-            self.msg_id += 1;
+        let peers = node.peers.clone();
+        for peer in &peers {
             out.push(Message {
-                src: self.id.clone(),
+                src: node.id.clone(),
                 dest: peer.clone(),
                 body: MessageBody::TarctReplicate {
-                    msg_id: self.msg_id,
+                    msg_id: node.next_msg_id(),
                     txn: replicate_ops.clone(),
                 },
             })
         }
 
         // reply to client
-        self.msg_id += 1;
         out.push(Message {
-            src: self.id.clone(),
+            src: node.id.clone(),
             dest: message.src,
             body: MessageBody::TxnOk {
-                msg_id: self.msg_id,
+                msg_id: node.next_msg_id(),
                 in_reply_to: msg_id,
                 txn: results,
             },
@@ -173,28 +154,22 @@ impl Node {
 
         out
     }
+}
 
-    fn handle(&mut self, message: Message) -> Vec<Message> {
+impl MessageHandler for TarctHandler {
+    fn handle(&mut self, node: &mut Node, message: Message) -> Vec<Message> {
         let mut out: Vec<Message> = Vec::new();
-        self.msg_id += 1;
         match message.body.clone() {
             MessageBody::Init {
                 msg_id,
                 node_id,
                 node_ids,
             } => {
-                self.handle_init(node_id, node_ids);
-                out.push(Message {
-                    src: self.id.clone(),
-                    dest: message.src,
-                    body: MessageBody::InitOk {
-                        msg_id: self.msg_id,
-                        in_reply_to: msg_id,
-                    },
-                })
+                node.handle_init(node_id, node_ids);
+                out.push(node.init_ok(message.src, msg_id));
             }
             MessageBody::Txn { msg_id, txn } => {
-                let messages = self.handle_tx(message, msg_id, txn);
+                let messages = self.handle_tx(node, message, msg_id, txn);
                 out.extend(messages);
             }
             MessageBody::TarctReplicate {
@@ -216,25 +191,6 @@ impl Node {
 
 #[tokio::main]
 async fn main() {
-    let mut node = Node::new();
-    let (tx, mut rx) = mpsc::channel::<Message>(32);
-
-    // Spawn stdin reader
-    let stdin_tx = tx.clone();
-    tokio::spawn(async move {
-        let reader = BufReader::new(io::stdin());
-        let mut lines = reader.lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            if let Ok(msg) = serde_json::from_str::<Message>(&line) {
-                let _ = stdin_tx.send(msg).await;
-            }
-        }
-    });
-
-    while let Some(msg) = rx.recv().await {
-        for response in node.handle(msg) {
-            let response_str = serde_json::to_string(&response).unwrap();
-            println!("{response_str}");
-        }
-    }
+    let handler = TarctHandler::new();
+    run_node(handler).await;
 }
