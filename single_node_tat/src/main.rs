@@ -1,4 +1,4 @@
-use maelstrom::node::run_node;
+use maelstrom::run_node;
 use single_node_tat::node::TatNode;
 
 #[tokio::main]

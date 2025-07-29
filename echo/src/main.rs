@@ -1,5 +1,5 @@
 use echo::node::EchoNode;
-use maelstrom::node::run_node;
+use maelstrom::run_node;
 
 #[tokio::main]
 async fn main() {

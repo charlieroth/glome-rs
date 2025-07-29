@@ -22,6 +22,12 @@ pub struct KafkaNode {
     pendings: HashMap<u64, Pending>,
 }
 
+impl Default for KafkaNode {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl KafkaNode {
     pub fn new() -> Self {
         Self {

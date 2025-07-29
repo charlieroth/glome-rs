@@ -12,6 +12,12 @@ pub struct MultiNodeBroadcastNode {
     gossip_peers: Vec<String>,
 }
 
+impl Default for MultiNodeBroadcastNode {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MultiNodeBroadcastNode {
     pub fn new() -> Self {
         Self {

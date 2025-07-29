@@ -14,6 +14,12 @@ pub struct Node {
     pub msg_id: u64,
 }
 
+impl Default for Node {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Node {
     pub fn new() -> Self {
         Self {

@@ -9,6 +9,12 @@ pub struct TatNode {
     entries: HashMap<u64, Option<u64>>,
 }
 
+impl Default for TatNode {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TatNode {
     pub fn new() -> Self {
         Self {

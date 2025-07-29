@@ -10,6 +10,12 @@ pub struct GrowOnlyCounterNode {
     kv: KV,
 }
 
+impl Default for GrowOnlyCounterNode {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl GrowOnlyCounterNode {
     pub fn new() -> Self {
         Self { kv: KV::new() }

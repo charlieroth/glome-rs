@@ -9,6 +9,12 @@ pub struct TarutNode {
     entries: HashMap<u64, Option<u64>>,
 }
 
+impl Default for TarutNode {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TarutNode {
     pub fn new() -> Self {
         Self {

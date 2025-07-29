@@ -7,6 +7,9 @@ pub mod log;
 pub mod node;
 pub mod simple_log;
 
+// Re-export key types from modules
+pub use node::{MessageHandler, Node, run_node};
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
     pub src: String,

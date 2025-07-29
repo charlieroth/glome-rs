@@ -1,6 +1,6 @@
 use maelstrom::{
     Message, MessageBody,
-    node::{MessageHandler, Node},
+    MessageHandler, Node,
 };
 
 pub struct EchoNode;

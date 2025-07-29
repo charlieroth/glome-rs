@@ -9,6 +9,12 @@ pub struct KafkaNode {
     logs: Logs,
 }
 
+impl Default for KafkaNode {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl KafkaNode {
     pub fn new() -> Self {
         Self { logs: Logs::new() }

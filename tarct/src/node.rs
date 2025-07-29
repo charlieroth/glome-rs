@@ -1,5 +1,4 @@
-use maelstrom::node::{MessageHandler, Node};
-use maelstrom::{ErrorCode, Message, MessageBody};
+use maelstrom::{ErrorCode, Message, MessageBody, MessageHandler, Node};
 use std::collections::HashMap;
 
 pub struct KV {
@@ -7,6 +6,12 @@ pub struct KV {
     entries: HashMap<u64, Option<u64>>,
     /// Version (commit timestamp) of the last write for each key
     versions: HashMap<u64, u64>,
+}
+
+impl Default for KV {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl KV {

@@ -8,6 +8,12 @@ pub struct SingleNodeBroadcastNode {
     messages: Vec<u64>,
 }
 
+impl Default for SingleNodeBroadcastNode {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SingleNodeBroadcastNode {
     pub fn new() -> Self {
         Self {
