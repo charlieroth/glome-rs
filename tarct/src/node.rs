@@ -57,6 +57,12 @@ pub struct TarctNode {
     commit_ts: u64,
 }
 
+impl Default for TarctNode {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TarctNode {
     pub fn new() -> Self {
         Self {
