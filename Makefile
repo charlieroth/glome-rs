@@ -43,4 +43,4 @@ tarut-partition:
 	maelstrom test -w txn-rw-register --bin ./target/debug/tarut --node-count 2 --concurrency 2n --time-limit 20 --rate 1000 --consistency-models read-uncommitted --availability total --nemesis partition
 
 tarct:
-	maelstrom test -w txn-rw-register --bin ./target/debug/tarct --node-count 2 --concurrency 2n --time-limit 20 --rate 1000 --consistency-models read-committed --availability total –-nemesis partition
+	maelstrom test -w txn-rw-register --bin ./target/debug/tarct --node-count 2 --concurrency 2n --time-limit 20 --rate 1000 --consistency-models read-committed --availability total --nemesis partition
