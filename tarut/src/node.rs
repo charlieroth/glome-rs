@@ -1,5 +1,5 @@
 use maelstrom::{
-    Message, MessageBody, ErrorCode,
+    Message, MessageBody,
     node::{MessageHandler, Node},
 };
 use std::collections::HashMap;
@@ -131,7 +131,7 @@ mod tests {
         let mut node = TarutNode::new();
         let txn = vec![("r".to_string(), 1, None)];
         let results = node.process_txn(txn);
-        
+
         assert_eq!(results.len(), 1);
         assert_eq!(results[0], ("r".to_string(), 1, None));
     }
@@ -141,7 +141,7 @@ mod tests {
         let mut node = TarutNode::new();
         let txn = vec![("w".to_string(), 1, Some(42))];
         let results = node.process_txn(txn);
-        
+
         assert_eq!(results.len(), 1);
         assert_eq!(results[0], ("w".to_string(), 1, Some(42)));
         assert_eq!(node.entries.get(&1), Some(&Some(42)));
@@ -150,12 +150,9 @@ mod tests {
     #[test]
     fn test_process_txn_write_then_read() {
         let mut node = TarutNode::new();
-        let txn = vec![
-            ("w".to_string(), 1, Some(42)),
-            ("r".to_string(), 1, None),
-        ];
+        let txn = vec![("w".to_string(), 1, Some(42)), ("r".to_string(), 1, None)];
         let results = node.process_txn(txn);
-        
+
         assert_eq!(results.len(), 2);
         assert_eq!(results[0], ("w".to_string(), 1, Some(42)));
         assert_eq!(results[1], ("r".to_string(), 1, Some(42)));
@@ -166,7 +163,7 @@ mod tests {
         let mut node = TarutNode::new();
         let txn = vec![("w".to_string(), 1, None)];
         let results = node.process_txn(txn);
-        
+
         assert_eq!(results.len(), 1);
         assert_eq!(results[0], ("w".to_string(), 1, None));
         assert_eq!(node.entries.get(&1), Some(&None));
@@ -181,7 +178,7 @@ mod tests {
             ("r".to_string(), 1, None),
         ];
         let results = node.process_txn(txn);
-        
+
         assert_eq!(results.len(), 3);
         assert_eq!(results[0], ("w".to_string(), 1, Some(42)));
         assert_eq!(results[1], ("w".to_string(), 1, Some(99)));
@@ -200,7 +197,7 @@ mod tests {
             ("r".to_string(), 3, None),
         ];
         let results = node.process_txn(txn);
-        
+
         assert_eq!(results.len(), 5);
         assert_eq!(results[0], ("w".to_string(), 1, Some(10)));
         assert_eq!(results[1], ("w".to_string(), 2, Some(20)));
@@ -218,7 +215,7 @@ mod tests {
             ("r".to_string(), 1, None),
         ];
         let results = node.process_txn(txn);
-        
+
         assert_eq!(results.len(), 2);
         assert_eq!(results[0], ("w".to_string(), 1, Some(42)));
         assert_eq!(results[1], ("r".to_string(), 1, Some(42)));
@@ -228,8 +225,15 @@ mod tests {
     fn test_handle_tx_creates_correct_messages() {
         let mut tarut_node = TarutNode::new();
         let mut node = Node::new();
-        node.handle_init("node1".to_string(), vec!["node1".to_string(), "node2".to_string(), "node3".to_string()]);
-        
+        node.handle_init(
+            "node1".to_string(),
+            vec![
+                "node1".to_string(),
+                "node2".to_string(),
+                "node3".to_string(),
+            ],
+        );
+
         let message = Message {
             src: "client".to_string(),
             dest: "node1".to_string(),
@@ -242,31 +246,36 @@ mod tests {
                 ],
             },
         };
-        
+
         let txn = vec![
             ("w".to_string(), 1, Some(42)),
             ("r".to_string(), 1, None),
             ("w".to_string(), 2, Some(99)),
         ];
-        
+
         let out_messages = tarut_node.handle_tx(&mut node, message, 1, txn);
-        
+
         // Should generate: 2 replicate messages (to peers) + 1 TxnOk message (to client)
         assert_eq!(out_messages.len(), 3);
-        
+
         // Check replicate messages to peers
-        let replicate_msgs: Vec<_> = out_messages.iter()
+        let replicate_msgs: Vec<_> = out_messages
+            .iter()
             .filter(|msg| matches!(msg.body, MessageBody::TarutReplicate { .. }))
             .collect();
         assert_eq!(replicate_msgs.len(), 2);
-        
+
         // Check TxnOk message to client
-        let txn_ok_msgs: Vec<_> = out_messages.iter()
+        let txn_ok_msgs: Vec<_> = out_messages
+            .iter()
             .filter(|msg| matches!(msg.body, MessageBody::TxnOk { .. }))
             .collect();
         assert_eq!(txn_ok_msgs.len(), 1);
-        
-        if let MessageBody::TxnOk { in_reply_to, txn, .. } = &txn_ok_msgs[0].body {
+
+        if let MessageBody::TxnOk {
+            in_reply_to, txn, ..
+        } = &txn_ok_msgs[0].body
+        {
             assert_eq!(*in_reply_to, 1);
             assert_eq!(txn.len(), 3);
             assert_eq!(txn[0], ("w".to_string(), 1, Some(42)));
@@ -281,27 +290,34 @@ mod tests {
     fn test_handle_tx_only_replicates_writes() {
         let mut tarut_node = TarutNode::new();
         let mut node = Node::new();
-        node.handle_init("node1".to_string(), vec!["node1".to_string(), "node2".to_string()]);
-        
+        node.handle_init(
+            "node1".to_string(),
+            vec!["node1".to_string(), "node2".to_string()],
+        );
+
         let message = Message {
             src: "client".to_string(),
             dest: "node1".to_string(),
-            body: MessageBody::Txn { msg_id: 1, txn: vec![] },
+            body: MessageBody::Txn {
+                msg_id: 1,
+                txn: vec![],
+            },
         };
-        
+
         let txn = vec![
             ("r".to_string(), 1, None),
             ("w".to_string(), 2, Some(99)),
             ("r".to_string(), 3, None),
         ];
-        
+
         let out_messages = tarut_node.handle_tx(&mut node, message, 1, txn);
-        
+
         // Check that only write operations are replicated
-        let replicate_msgs: Vec<_> = out_messages.iter()
+        let replicate_msgs: Vec<_> = out_messages
+            .iter()
             .filter(|msg| matches!(msg.body, MessageBody::TarutReplicate { .. }))
             .collect();
-        
+
         if let MessageBody::TarutReplicate { txn, .. } = &replicate_msgs[0].body {
             assert_eq!(txn.len(), 1);
             assert_eq!(txn[0], ("w".to_string(), 2, Some(99)));
@@ -314,7 +330,7 @@ mod tests {
     fn test_message_handler_init() {
         let mut tarut_node = TarutNode::new();
         let mut node = Node::new();
-        
+
         let message = Message {
             src: "maelstrom".to_string(),
             dest: "node1".to_string(),
@@ -324,13 +340,13 @@ mod tests {
                 node_ids: vec!["node1".to_string(), "node2".to_string()],
             },
         };
-        
+
         let out_messages = tarut_node.handle(&mut node, message);
-        
+
         assert_eq!(out_messages.len(), 1);
         assert_eq!(node.id, "node1");
         assert_eq!(node.peers, vec!["node2"]);
-        
+
         if let MessageBody::InitOk { in_reply_to, .. } = &out_messages[0].body {
             assert_eq!(*in_reply_to, 1);
         } else {
@@ -342,8 +358,11 @@ mod tests {
     fn test_message_handler_txn() {
         let mut tarut_node = TarutNode::new();
         let mut node = Node::new();
-        node.handle_init("node1".to_string(), vec!["node1".to_string(), "node2".to_string()]);
-        
+        node.handle_init(
+            "node1".to_string(),
+            vec!["node1".to_string(), "node2".to_string()],
+        );
+
         let message = Message {
             src: "client".to_string(),
             dest: "node1".to_string(),
@@ -352,13 +371,14 @@ mod tests {
                 txn: vec![("w".to_string(), 1, Some(42))],
             },
         };
-        
+
         let out_messages = tarut_node.handle(&mut node, message);
-        
+
         // Should generate replicate + TxnOk messages
         assert!(out_messages.len() >= 2);
-        
-        let txn_ok_msgs: Vec<_> = out_messages.iter()
+
+        let txn_ok_msgs: Vec<_> = out_messages
+            .iter()
             .filter(|msg| matches!(msg.body, MessageBody::TxnOk { .. }))
             .collect();
         assert_eq!(txn_ok_msgs.len(), 1);
@@ -368,7 +388,7 @@ mod tests {
     fn test_message_handler_tarut_replicate() {
         let mut tarut_node = TarutNode::new();
         let mut node = Node::new();
-        
+
         let message = Message {
             src: "node2".to_string(),
             dest: "node1".to_string(),
@@ -377,12 +397,12 @@ mod tests {
                 txn: vec![("w".to_string(), 1, Some(42))],
             },
         };
-        
+
         let out_messages = tarut_node.handle(&mut node, message);
-        
+
         // Should not generate any outgoing messages for replication
         assert_eq!(out_messages.len(), 0);
-        
+
         // But should apply the transaction locally
         assert_eq!(tarut_node.entries.get(&1), Some(&Some(42)));
     }
@@ -391,7 +411,7 @@ mod tests {
     fn test_message_handler_unknown_message() {
         let mut tarut_node = TarutNode::new();
         let mut node = Node::new();
-        
+
         let message = Message {
             src: "unknown".to_string(),
             dest: "node1".to_string(),
@@ -403,9 +423,9 @@ mod tests {
                 extra: None,
             },
         };
-        
+
         let out_messages = tarut_node.handle(&mut node, message);
-        
+
         // Should not generate any messages for unknown message types
         assert_eq!(out_messages.len(), 0);
     }
@@ -413,15 +433,15 @@ mod tests {
     #[test]
     fn test_read_uncommitted_consistency() {
         let mut tarut_node = TarutNode::new();
-        
+
         // Simulate concurrent transactions that could cause dirty reads
         let txn1 = vec![("w".to_string(), 1, Some(100))];
         let txn2 = vec![("r".to_string(), 1, None)];
-        
+
         // Apply write first
         let results1 = tarut_node.process_txn(txn1);
         assert_eq!(results1[0], ("w".to_string(), 1, Some(100)));
-        
+
         // Read should see uncommitted write (read uncommitted behavior)
         let results2 = tarut_node.process_txn(txn2);
         assert_eq!(results2[0], ("r".to_string(), 1, Some(100)));
@@ -430,7 +450,7 @@ mod tests {
     #[test]
     fn test_dirty_write_prevention() {
         let mut tarut_node = TarutNode::new();
-        
+
         // Test that writes properly overwrite previous values
         let txn = vec![
             ("w".to_string(), 1, Some(1)),
@@ -438,9 +458,9 @@ mod tests {
             ("w".to_string(), 1, Some(3)),
             ("r".to_string(), 1, None),
         ];
-        
+
         let results = tarut_node.process_txn(txn);
-        
+
         // Should see the final write value
         assert_eq!(results[3], ("r".to_string(), 1, Some(3)));
         assert_eq!(tarut_node.entries.get(&1), Some(&Some(3)));
