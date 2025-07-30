@@ -1,0 +1,72 @@
+name: Rust + Maelstrom CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-and-test:
+    name: Build & Maelstrom tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          [ echoer, unique-id, snb, mnb, ftb,
+            eb-one, eb-two, goc,
+            sn-kafka, mn-kafka, e-kafka,
+            sn-tat, tarut, tarut-partition, tarct ]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+          components: clippy
+
+      - name: Cache cargo registry + build
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Cache / install Maelstrom
+        id: maelstrom-cache
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/maelstrom/v0.2.4
+          key: maelstrom-v0.2.4
+
+      - name: Install Maelstrom (missing in cache)
+        if: steps.maelstrom-cache.outputs.cache-hit != 'true'
+        run: |
+          set -eu
+          mkdir -p ~/.cache/maelstrom/v0.2.4
+          curl -sL https://github.com/jepsen-io/maelstrom/releases/download/v0.2.4/maelstrom.tar.bz2 \
+            -o /tmp/maelstrom.tar.bz2
+          tar -xjf /tmp/maelstrom.tar.bz2 -C ~/.cache/maelstrom/v0.2.4 --strip-components=1
+
+      - name: Add Maelstrom to PATH
+        run: echo "$HOME/.cache/maelstrom/v0.2.4" >> $GITHUB_PATH
+
+      - name: Build workspace (debug)
+        run: cargo build --workspace --verbose
+
+      - name: Run Maelstrom ${{ matrix.target }}
+        run: make ${{ matrix.target }}
