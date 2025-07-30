@@ -27,6 +27,17 @@ jobs:
         with:
           fetch-depth: 1
 
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y openjdk-17-jdk graphviz gnuplot
+          
+      - name: Verify system dependencies
+        run: |
+          java -version
+          dot -V
+          gnuplot --version
+
       - name: Install Rust
         uses: actions-rs/toolchain@v1
         with:
