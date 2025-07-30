@@ -44,7 +44,7 @@ mod tests {
         let mut node = Node::new();
         
         let init_message = Message {
-            src: "maelstrom".to_string(),
+            src: "c1".to_string(),
             dest: "n1".to_string(),
             body: MessageBody::Init {
                 msg_id: 1,
@@ -57,7 +57,7 @@ mod tests {
 
         assert_eq!(responses.len(), 1);
         assert_eq!(responses[0].src, "n1");
-        assert_eq!(responses[0].dest, "maelstrom");
+        assert_eq!(responses[0].dest, "c1");
         
         match &responses[0].body {
             MessageBody::InitOk { msg_id: _, in_reply_to } => {
@@ -80,7 +80,7 @@ mod tests {
         node.handle_init("n1".to_string(), vec!["n1".to_string()]);
 
         let echo_message = Message {
-            src: "client".to_string(),
+            src: "c1".to_string(),
             dest: "n1".to_string(),
             body: MessageBody::Echo {
                 msg_id: 42,
@@ -92,7 +92,7 @@ mod tests {
 
         assert_eq!(responses.len(), 1);
         assert_eq!(responses[0].src, "n1");
-        assert_eq!(responses[0].dest, "client");
+        assert_eq!(responses[0].dest, "c1");
         
         match &responses[0].body {
             MessageBody::EchoOk { msg_id: _, in_reply_to, echo } => {
@@ -109,7 +109,7 @@ mod tests {
         let mut node = Node::new();
         
         let unknown_message = Message {
-            src: "client".to_string(),
+            src: "c1".to_string(),
             dest: "n1".to_string(),
             body: MessageBody::Generate { msg_id: 1 },
         };
@@ -129,7 +129,7 @@ mod tests {
 
         // First echo
         let echo1 = Message {
-            src: "client1".to_string(),
+            src: "c1".to_string(),
             dest: "n1".to_string(),
             body: MessageBody::Echo {
                 msg_id: 1,
@@ -142,7 +142,7 @@ mod tests {
 
         // Second echo
         let echo2 = Message {
-            src: "client2".to_string(),
+            src: "c2".to_string(),
             dest: "n1".to_string(),
             body: MessageBody::Echo {
                 msg_id: 2,
@@ -180,7 +180,7 @@ mod tests {
         node.handle_init("n1".to_string(), vec!["n1".to_string()]);
 
         let echo_message = Message {
-            src: "client".to_string(),
+            src: "c1".to_string(),
             dest: "n1".to_string(),
             body: MessageBody::Echo {
                 msg_id: 1,
