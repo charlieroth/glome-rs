@@ -135,3 +135,434 @@ impl MessageHandler for MultiNodeBroadcastNode {
         out
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn test_broadcast_node_handles_init_message() {
+        let mut handler = MultiNodeBroadcastNode::new();
+        let mut node = Node::new();
+        
+        let init_message = Message {
+            src: "c1".to_string(),
+            dest: "n1".to_string(),
+            body: MessageBody::Init {
+                msg_id: 1,
+                node_id: "n1".to_string(),
+                node_ids: vec![
+                    "n1".to_string(), 
+                    "n2".to_string(), 
+                    "n3".to_string(),
+                    "n4".to_string(),
+                    "n5".to_string(),
+                ],
+            },
+        };
+
+        let responses = handler.handle(&mut node, init_message);
+
+        assert_eq!(responses.len(), 1);
+        assert_eq!(responses[0].src, "n1");
+        assert_eq!(responses[0].dest, "c1");
+        
+        match &responses[0].body {
+            MessageBody::InitOk { msg_id: _, in_reply_to } => {
+                assert_eq!(*in_reply_to, 1);
+            }
+            _ => panic!("Expected InitOk message"),
+        }
+
+        // Verify node state was updated
+        assert_eq!(node.id, "n1");
+        assert_eq!(node.peers, vec!["n2", "n3", "n4", "n5"]);
+        
+        // Verify gossip peers were constructed (should be k=4, but limited by available peers)
+        assert_eq!(handler.gossip_peers.len(), 4);
+        for peer in &handler.gossip_peers {
+            assert!(node.peers.contains(peer));
+            assert_ne!(*peer, node.id);
+        }
+    }
+
+    #[test]
+    fn test_broadcast_node_handles_topology_message() {
+        let mut handler = MultiNodeBroadcastNode::new();
+        let mut node = Node::new();
+        
+        // Initialize node first
+        node.handle_init("n1".to_string(), vec!["n1".to_string(), "n2".to_string()]);
+
+        let topology_message = Message {
+            src: "c1".to_string(),
+            dest: "n1".to_string(),
+            body: MessageBody::Topology {
+                msg_id: 1,
+                topology: HashMap::new(),
+            },
+        };
+
+        let responses = handler.handle(&mut node, topology_message);
+
+        assert_eq!(responses.len(), 1);
+        assert_eq!(responses[0].src, "n1");
+        assert_eq!(responses[0].dest, "c1");
+        
+        match &responses[0].body {
+            MessageBody::TopologyOk { msg_id: _, in_reply_to } => {
+                assert_eq!(*in_reply_to, 1);
+            }
+            _ => panic!("Expected TopologyOk message"),
+        }
+    }
+
+    #[test]
+    fn test_broadcast_node_handles_broadcast_message() {
+        let mut handler = MultiNodeBroadcastNode::new();
+        let mut node = Node::new();
+        
+        // Initialize node
+        node.handle_init("n1".to_string(), vec!["n1".to_string(), "n2".to_string(), "n3".to_string()]);
+
+        let broadcast_message = Message {
+            src: "c1".to_string(),
+            dest: "n1".to_string(),
+            body: MessageBody::Broadcast {
+                msg_id: 1,
+                message: 42,
+            },
+        };
+
+        let responses = handler.handle(&mut node, broadcast_message);
+
+        // Should only have BroadcastOk response (no peer broadcasts in multi-node version)
+        assert_eq!(responses.len(), 1);
+
+        // Check BroadcastOk response
+        let broadcast_ok = &responses[0];
+        assert_eq!(broadcast_ok.src, "n1");
+        assert_eq!(broadcast_ok.dest, "c1");
+        match &broadcast_ok.body {
+            MessageBody::BroadcastOk { msg_id: _, in_reply_to } => {
+                assert_eq!(*in_reply_to, 1);
+            }
+            _ => panic!("Expected BroadcastOk message"),
+        }
+
+        // Verify message was stored in HashSet
+        assert!(handler.messages.contains(&42));
+        assert_eq!(handler.messages.len(), 1);
+    }
+
+    #[test]
+    fn test_broadcast_node_handles_broadcast_gossip_message() {
+        let mut handler = MultiNodeBroadcastNode::new();
+        let mut node = Node::new();
+        
+        // Initialize node
+        node.handle_init("n1".to_string(), vec!["n1".to_string(), "n2".to_string()]);
+
+        let gossip_message = Message {
+            src: "n2".to_string(),
+            dest: "n1".to_string(),
+            body: MessageBody::BroadcastGossip {
+                msg_id: 1,
+                messages: vec![10, 20, 30],
+            },
+        };
+
+        let responses = handler.handle(&mut node, gossip_message);
+
+        // BroadcastGossip messages don't require a response
+        assert_eq!(responses.len(), 0);
+
+        // Verify messages were stored
+        assert!(handler.messages.contains(&10));
+        assert!(handler.messages.contains(&20));
+        assert!(handler.messages.contains(&30));
+        assert_eq!(handler.messages.len(), 3);
+    }
+
+    #[test]
+    fn test_broadcast_node_handles_read_message() {
+        let mut handler = MultiNodeBroadcastNode::new();
+        let mut node = Node::new();
+        
+        // Initialize node
+        node.handle_init("n1".to_string(), vec!["n1".to_string()]);
+
+        // Add some messages manually for testing
+        handler.messages.insert(10);
+        handler.messages.insert(20);
+        handler.messages.insert(30);
+
+        let read_message = Message {
+            src: "c1".to_string(),
+            dest: "n1".to_string(),
+            body: MessageBody::Read { msg_id: 1 },
+        };
+
+        let responses = handler.handle(&mut node, read_message);
+
+        assert_eq!(responses.len(), 1);
+        assert_eq!(responses[0].src, "n1");
+        assert_eq!(responses[0].dest, "c1");
+        
+        match &responses[0].body {
+            MessageBody::ReadOk { msg_id: _, in_reply_to, messages, value } => {
+                assert_eq!(*in_reply_to, 1);
+                let returned_messages = messages.as_ref().unwrap();
+                assert_eq!(returned_messages.len(), 3);
+                assert!(returned_messages.contains(&10));
+                assert!(returned_messages.contains(&20));
+                assert!(returned_messages.contains(&30));
+                assert_eq!(*value, None);
+            }
+            _ => panic!("Expected ReadOk message"),
+        }
+    }
+
+    #[test]
+    fn test_gossip_method() {
+        let mut handler = MultiNodeBroadcastNode::new();
+        let mut node = Node::new();
+        
+        // Initialize node with peers
+        node.handle_init("n1".to_string(), vec![
+            "n1".to_string(), 
+            "n2".to_string(), 
+            "n3".to_string()
+        ]);
+        handler.gossip_peers = vec!["n2".to_string(), "n3".to_string()];
+        
+        // Add some messages
+        handler.messages.insert(100);
+        handler.messages.insert(200);
+
+        let gossip_messages = handler.gossip(&mut node);
+
+        assert_eq!(gossip_messages.len(), 2);
+        
+        // Check each gossip message
+        for msg in &gossip_messages {
+            assert_eq!(msg.src, "n1");
+            assert!(msg.dest == "n2" || msg.dest == "n3");
+            match &msg.body {
+                MessageBody::BroadcastGossip { msg_id: _, messages } => {
+                    assert_eq!(messages.len(), 2);
+                    assert!(messages.contains(&100));
+                    assert!(messages.contains(&200));
+                }
+                _ => panic!("Expected BroadcastGossip message"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_gossip_method_with_empty_state() {
+        let handler = MultiNodeBroadcastNode::new();
+        let mut node = Node::new();
+        
+        // Test with empty node id
+        let gossip_messages = handler.gossip(&mut node);
+        assert_eq!(gossip_messages.len(), 0);
+        
+        // Test with empty gossip peers
+        node.handle_init("n1".to_string(), vec!["n1".to_string()]);
+        let gossip_messages = handler.gossip(&mut node);
+        assert_eq!(gossip_messages.len(), 0);
+        
+        // Test with empty messages
+        let mut handler_with_peers = MultiNodeBroadcastNode::new();
+        handler_with_peers.gossip_peers = vec!["n2".to_string()];
+        let gossip_messages = handler_with_peers.gossip(&mut node);
+        assert_eq!(gossip_messages.len(), 0);
+    }
+
+    #[test]
+    fn test_construct_k_regular_neighbors() {
+        let handler = MultiNodeBroadcastNode::new();
+        let mut node = Node::new();
+        
+        // Test with 5 peers, k=3
+        node.handle_init("n1".to_string(), vec![
+            "n1".to_string(),
+            "n2".to_string(), 
+            "n3".to_string(),
+            "n4".to_string(),
+            "n5".to_string(),
+            "n6".to_string(),
+        ]);
+
+        let neighbors = handler.construct_k_regular_neighbors(&node, 3);
+        
+        assert_eq!(neighbors.len(), 3);
+        for neighbor in &neighbors {
+            assert!(node.peers.contains(neighbor));
+            assert_ne!(*neighbor, node.id);
+        }
+        
+        // Test with k larger than available peers
+        let large_k_neighbors = handler.construct_k_regular_neighbors(&node, 10);
+        assert_eq!(large_k_neighbors.len(), 5); // Should be limited to actual peer count
+        
+        // Test with k=0
+        let zero_neighbors = handler.construct_k_regular_neighbors(&node, 0);
+        assert_eq!(zero_neighbors.len(), 0);
+    }
+
+    #[test]
+    fn test_broadcast_node_handles_multiple_broadcasts() {
+        let mut handler = MultiNodeBroadcastNode::new();
+        let mut node = Node::new();
+        
+        // Initialize node
+        node.handle_init("n1".to_string(), vec!["n1".to_string(), "n2".to_string()]);
+
+        // Send first broadcast
+        let broadcast1 = Message {
+            src: "c1".to_string(),
+            dest: "n1".to_string(),
+            body: MessageBody::Broadcast {
+                msg_id: 1,
+                message: 100,
+            },
+        };
+
+        let responses1 = handler.handle(&mut node, broadcast1);
+        assert_eq!(responses1.len(), 1); // Only BroadcastOk
+
+        // Send second broadcast
+        let broadcast2 = Message {
+            src: "c1".to_string(),
+            dest: "n1".to_string(),
+            body: MessageBody::Broadcast {
+                msg_id: 2,
+                message: 200,
+            },
+        };
+
+        let responses2 = handler.handle(&mut node, broadcast2);
+        assert_eq!(responses2.len(), 1); // Only BroadcastOk
+
+        // Verify both messages are stored (HashSet ensures uniqueness)
+        assert!(handler.messages.contains(&100));
+        assert!(handler.messages.contains(&200));
+        assert_eq!(handler.messages.len(), 2);
+
+        // Test read to confirm both messages are returned
+        let read_message = Message {
+            src: "c1".to_string(),
+            dest: "n1".to_string(),
+            body: MessageBody::Read { msg_id: 3 },
+        };
+
+        let read_responses = handler.handle(&mut node, read_message);
+        match &read_responses[0].body {
+            MessageBody::ReadOk { messages, .. } => {
+                let returned_messages = messages.as_ref().unwrap();
+                assert_eq!(returned_messages.len(), 2);
+                assert!(returned_messages.contains(&100));
+                assert!(returned_messages.contains(&200));
+            }
+            _ => panic!("Expected ReadOk message"),
+        }
+    }
+
+    #[test]
+    fn test_broadcast_node_deduplicates_messages() {
+        let mut handler = MultiNodeBroadcastNode::new();
+        let mut node = Node::new();
+        
+        // Initialize node
+        node.handle_init("n1".to_string(), vec!["n1".to_string()]);
+
+        // Send same broadcast multiple times
+        let broadcast_message = Message {
+            src: "c1".to_string(),
+            dest: "n1".to_string(),
+            body: MessageBody::Broadcast {
+                msg_id: 1,
+                message: 42,
+            },
+        };
+
+        handler.handle(&mut node, broadcast_message.clone());
+        handler.handle(&mut node, broadcast_message.clone());
+        handler.handle(&mut node, broadcast_message);
+
+        // Should only store one copy due to HashSet
+        assert_eq!(handler.messages.len(), 1);
+        assert!(handler.messages.contains(&42));
+    }
+
+    #[test]
+    fn test_broadcast_node_ignores_unknown_messages() {
+        let mut handler = MultiNodeBroadcastNode::new();
+        let mut node = Node::new();
+        
+        let unknown_message = Message {
+            src: "c1".to_string(),
+            dest: "n1".to_string(),
+            body: MessageBody::Generate { msg_id: 1 },
+        };
+
+        let responses = handler.handle(&mut node, unknown_message);
+
+        assert_eq!(responses.len(), 0);
+    }
+
+    #[test]
+    fn test_broadcast_node_read_when_empty() {
+        let mut handler = MultiNodeBroadcastNode::new();
+        let mut node = Node::new();
+        
+        // Initialize node
+        node.handle_init("n1".to_string(), vec!["n1".to_string()]);
+
+        let read_message = Message {
+            src: "c1".to_string(),
+            dest: "n1".to_string(),
+            body: MessageBody::Read { msg_id: 1 },
+        };
+
+        let responses = handler.handle(&mut node, read_message);
+
+        assert_eq!(responses.len(), 1);
+        match &responses[0].body {
+            MessageBody::ReadOk { messages, .. } => {
+                assert_eq!(messages.as_ref().unwrap(), &Vec::<u64>::new());
+            }
+            _ => panic!("Expected ReadOk message"),
+        }
+    }
+
+    #[test]
+    fn test_broadcast_node_generates_unique_msg_ids() {
+        let mut handler = MultiNodeBroadcastNode::new();
+        let mut node = Node::new();
+        
+        // Initialize node with gossip peers
+        node.handle_init("n1".to_string(), vec!["n1".to_string(), "n2".to_string()]);
+        handler.gossip_peers = vec!["n2".to_string()];
+        handler.messages.insert(42);
+
+        let gossip_messages1 = handler.gossip(&mut node);
+        let gossip_messages2 = handler.gossip(&mut node);
+
+        // Extract msg_ids from gossip messages
+        let msg_id1 = match &gossip_messages1[0].body {
+            MessageBody::BroadcastGossip { msg_id, .. } => *msg_id,
+            _ => panic!("Expected BroadcastGossip message"),
+        };
+
+        let msg_id2 = match &gossip_messages2[0].body {
+            MessageBody::BroadcastGossip { msg_id, .. } => *msg_id,
+            _ => panic!("Expected BroadcastGossip message"),
+        };
+
+        assert_ne!(msg_id1, msg_id2);
+    }
+}
