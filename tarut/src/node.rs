@@ -112,6 +112,8 @@ impl MessageHandler for TarutNode {
 
 #[cfg(test)]
 mod tests {
+    use maelstrom::ErrorCode;
+
     use super::*;
 
     #[test]
