@@ -2,13 +2,55 @@ use maelstrom::{
     Message, MessageBody,
     node::{MessageHandler, Node},
 };
-use rand::Rng;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-pub struct UniqueIdNode;
+// 42 bits for millis, 10 bits for node id, 12 bits for per-ms sequence
+const TIME_BITS: u64 = 42;
+const NODE_BITS: u64 = 10;
+const SEQ_BITS: u64 = 12;
+const TIME_MASK: u64 = (1u64 << TIME_BITS) - 1; // 0..(2^42-1)
 
-impl UniqueIdNode {
-    pub fn handle_generate(&self, _msg_id: u64) -> u64 {
-        rand::rng().random::<u64>()
+struct IdGen {
+    node_bits: u64,
+    last_ms: u64,
+    seq: u16, // 12 bits
+}
+
+impl IdGen {
+    fn new(node_id: &str) -> Self {
+        let node_hash = xxhash_rust::xxh3::xxh3_64(node_id.as_bytes()) & ((1u64 << NODE_BITS) - 1);
+        Self {
+            node_bits: node_hash,
+            last_ms: 0,
+            seq: 0,
+        }
+    }
+
+    fn generate(&mut self) -> u64 {
+        let now_ms: u64 = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time went backwards")
+            .as_millis() as u64;
+        let ts = now_ms & TIME_MASK;
+
+        if ts == self.last_ms {
+            self.seq = self.seq.wrapping_add(1);
+        } else {
+            self.last_ms = ts;
+            self.seq = 0;
+        }
+
+        (ts << (NODE_BITS + SEQ_BITS)) | (self.node_bits << SEQ_BITS) | (self.seq as u64)
+    }
+}
+
+pub struct UniqueIdNode {
+    id_gen: Option<IdGen>,
+}
+
+impl Default for UniqueIdNode {
+    fn default() -> Self {
+        Self { id_gen: None }
     }
 }
 
@@ -22,10 +64,22 @@ impl MessageHandler for UniqueIdNode {
                 node_ids,
             } => {
                 node.handle_init(node_id, node_ids);
+                // Establish generator now that we know the node id
+                if self.id_gen.is_none() {
+                    self.id_gen = Some(IdGen::new(&node.id));
+                }
                 out.push(node.init_ok(message.src, msg_id));
             }
             MessageBody::Generate { msg_id } => {
-                let unique_id = self.handle_generate(msg_id);
+                // Lazily initialize generator if not already done (e.g., if Node was inited externally)
+                if self.id_gen.is_none() {
+                    self.id_gen = Some(IdGen::new(&node.id));
+                }
+                let unique_id = self
+                    .id_gen
+                    .as_mut()
+                    .expect("id_gen must be initialized")
+                    .generate();
                 let response_msg_id = node.next_msg_id();
                 out.push(node.reply(
                     message.src,
@@ -49,7 +103,7 @@ mod tests {
 
     #[test]
     fn test_unique_id_node_handles_init_message() {
-        let mut handler = UniqueIdNode;
+        let mut handler = UniqueIdNode::default();
         let mut node = Node::new();
 
         let init_message = Message {
@@ -73,7 +127,7 @@ mod tests {
                 msg_id: _,
                 in_reply_to,
             } => {
-                assert_eq!(*in_reply_to, 1);
+                assert_eq!(in_reply_to, &1);
             }
             _ => panic!("Expected InitOk message"),
         }
@@ -85,7 +139,7 @@ mod tests {
 
     #[test]
     fn test_unique_id_node_ignores_unknown_messages() {
-        let mut handler = UniqueIdNode;
+        let mut handler = UniqueIdNode::default();
         let mut node = Node::new();
 
         let unknown_message = Message {
@@ -104,7 +158,7 @@ mod tests {
 
     #[test]
     fn test_unique_id_node_generates_unique_ids_for_many_requests() {
-        let mut handler = UniqueIdNode;
+        let mut handler = UniqueIdNode::default();
         let mut node = Node::new();
 
         // Initialize node first
@@ -129,7 +183,7 @@ mod tests {
                     in_reply_to,
                     id,
                 } => {
-                    assert_eq!(*in_reply_to, i);
+                    assert_eq!(in_reply_to, &i);
                     // Insert the ID into the set - if it's not unique, insert will return false
                     assert!(generated_ids.insert(*id), "Generated non-unique ID: {id}");
                 }

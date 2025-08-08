@@ -3,5 +3,5 @@ use uniqueids::node::UniqueIdNode;
 
 #[tokio::main]
 async fn main() {
-    run_node(UniqueIdNode).await;
+    run_node(UniqueIdNode::default()).await;
 }
