@@ -13,7 +13,9 @@ impl Default for Logs {
 
 impl Logs {
     pub fn new() -> Self {
-        Self { inner: HashMap::new() }
+        Self {
+            inner: HashMap::new(),
+        }
     }
 
     fn get_or_create(&mut self, key: &str) -> &mut Log {
@@ -76,14 +78,14 @@ impl Default for Log {
 
 impl Log {
     /// Create a new log starting at offset 0
-     pub fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             entries: BTreeMap::new(),
             next_offset: 0,
-            committed: 0
+            committed: 0,
         }
     }
-    
+
     /// Append a message, returning its unique offset
     pub fn append(&mut self, msg: u64) -> u64 {
         let offset = self.next_offset;
@@ -91,7 +93,7 @@ impl Log {
         self.next_offset += 1;
         offset
     }
-    
+
     /// Return all entries at or after `from_offset`, up to `max` items if specified
     pub fn read_from(&self, from_offset: u64, max: Option<usize>) -> Vec<(u64, u64)> {
         let mut out = Vec::new();
@@ -118,4 +120,3 @@ impl Log {
         self.committed
     }
 }
-

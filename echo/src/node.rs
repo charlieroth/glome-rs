@@ -42,7 +42,7 @@ mod tests {
     fn test_echo_node_handles_init_message() {
         let mut handler = EchoNode;
         let mut node = Node::new();
-        
+
         let init_message = Message {
             src: "c1".to_string(),
             dest: "n1".to_string(),
@@ -58,9 +58,12 @@ mod tests {
         assert_eq!(responses.len(), 1);
         assert_eq!(responses[0].src, "n1");
         assert_eq!(responses[0].dest, "c1");
-        
+
         match &responses[0].body {
-            MessageBody::InitOk { msg_id: _, in_reply_to } => {
+            MessageBody::InitOk {
+                msg_id: _,
+                in_reply_to,
+            } => {
                 assert_eq!(*in_reply_to, 1);
             }
             _ => panic!("Expected InitOk message"),
@@ -75,7 +78,7 @@ mod tests {
     fn test_echo_node_handles_echo_message() {
         let mut handler = EchoNode;
         let mut node = Node::new();
-        
+
         // Initialize node first
         node.handle_init("n1".to_string(), vec!["n1".to_string()]);
 
@@ -93,9 +96,13 @@ mod tests {
         assert_eq!(responses.len(), 1);
         assert_eq!(responses[0].src, "n1");
         assert_eq!(responses[0].dest, "c1");
-        
+
         match &responses[0].body {
-            MessageBody::EchoOk { msg_id: _, in_reply_to, echo } => {
+            MessageBody::EchoOk {
+                msg_id: _,
+                in_reply_to,
+                echo,
+            } => {
                 assert_eq!(*in_reply_to, 42);
                 assert_eq!(echo, "Hello, World!");
             }
@@ -107,7 +114,7 @@ mod tests {
     fn test_echo_node_ignores_unknown_messages() {
         let mut handler = EchoNode;
         let mut node = Node::new();
-        
+
         let unknown_message = Message {
             src: "c1".to_string(),
             dest: "n1".to_string(),
@@ -123,7 +130,7 @@ mod tests {
     fn test_echo_node_multiple_echo_messages() {
         let mut handler = EchoNode;
         let mut node = Node::new();
-        
+
         // Initialize node first
         node.handle_init("n1".to_string(), vec!["n1".to_string()]);
 
@@ -155,7 +162,11 @@ mod tests {
 
         // Verify both responses are correct
         match &responses1[0].body {
-            MessageBody::EchoOk { msg_id: _, in_reply_to, echo } => {
+            MessageBody::EchoOk {
+                msg_id: _,
+                in_reply_to,
+                echo,
+            } => {
                 assert_eq!(*in_reply_to, 1);
                 assert_eq!(echo, "First");
             }
@@ -163,7 +174,11 @@ mod tests {
         }
 
         match &responses2[0].body {
-            MessageBody::EchoOk { msg_id: _, in_reply_to, echo } => {
+            MessageBody::EchoOk {
+                msg_id: _,
+                in_reply_to,
+                echo,
+            } => {
                 assert_eq!(*in_reply_to, 2);
                 assert_eq!(echo, "Second");
             }
@@ -175,7 +190,7 @@ mod tests {
     fn test_echo_node_generates_unique_msg_ids() {
         let mut handler = EchoNode;
         let mut node = Node::new();
-        
+
         // Initialize node first
         node.handle_init("n1".to_string(), vec!["n1".to_string()]);
 

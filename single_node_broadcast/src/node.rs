@@ -107,7 +107,7 @@ mod tests {
     fn test_broadcast_node_handles_init_message() {
         let mut handler = SingleNodeBroadcastNode::new();
         let mut node = Node::new();
-        
+
         let init_message = Message {
             src: "c1".to_string(),
             dest: "n1".to_string(),
@@ -123,9 +123,12 @@ mod tests {
         assert_eq!(responses.len(), 1);
         assert_eq!(responses[0].src, "n1");
         assert_eq!(responses[0].dest, "c1");
-        
+
         match &responses[0].body {
-            MessageBody::InitOk { msg_id: _, in_reply_to } => {
+            MessageBody::InitOk {
+                msg_id: _,
+                in_reply_to,
+            } => {
                 assert_eq!(*in_reply_to, 1);
             }
             _ => panic!("Expected InitOk message"),
@@ -140,7 +143,7 @@ mod tests {
     fn test_broadcast_node_handles_topology_message() {
         let mut handler = SingleNodeBroadcastNode::new();
         let mut node = Node::new();
-        
+
         // Initialize node first
         node.handle_init("n1".to_string(), vec!["n1".to_string(), "n2".to_string()]);
 
@@ -158,9 +161,12 @@ mod tests {
         assert_eq!(responses.len(), 1);
         assert_eq!(responses[0].src, "n1");
         assert_eq!(responses[0].dest, "c1");
-        
+
         match &responses[0].body {
-            MessageBody::TopologyOk { msg_id: _, in_reply_to } => {
+            MessageBody::TopologyOk {
+                msg_id: _,
+                in_reply_to,
+            } => {
                 assert_eq!(*in_reply_to, 1);
             }
             _ => panic!("Expected TopologyOk message"),
@@ -171,9 +177,12 @@ mod tests {
     fn test_broadcast_node_handles_broadcast_message() {
         let mut handler = SingleNodeBroadcastNode::new();
         let mut node = Node::new();
-        
+
         // Initialize node with peers
-        node.handle_init("n1".to_string(), vec!["n1".to_string(), "n2".to_string(), "n3".to_string()]);
+        node.handle_init(
+            "n1".to_string(),
+            vec!["n1".to_string(), "n2".to_string(), "n3".to_string()],
+        );
 
         let broadcast_message = Message {
             src: "c1".to_string(),
@@ -194,7 +203,10 @@ mod tests {
         assert_eq!(broadcast_ok.src, "n1");
         assert_eq!(broadcast_ok.dest, "c1");
         match &broadcast_ok.body {
-            MessageBody::BroadcastOk { msg_id: _, in_reply_to } => {
+            MessageBody::BroadcastOk {
+                msg_id: _,
+                in_reply_to,
+            } => {
                 assert_eq!(*in_reply_to, 1);
             }
             _ => panic!("Expected BroadcastOk message"),
@@ -223,7 +235,7 @@ mod tests {
     fn test_broadcast_node_handles_read_message() {
         let mut handler = SingleNodeBroadcastNode::new();
         let mut node = Node::new();
-        
+
         // Initialize node
         node.handle_init("n1".to_string(), vec!["n1".to_string()]);
 
@@ -241,9 +253,14 @@ mod tests {
         assert_eq!(responses.len(), 1);
         assert_eq!(responses[0].src, "n1");
         assert_eq!(responses[0].dest, "c1");
-        
+
         match &responses[0].body {
-            MessageBody::ReadOk { msg_id: _, in_reply_to, messages, value } => {
+            MessageBody::ReadOk {
+                msg_id: _,
+                in_reply_to,
+                messages,
+                value,
+            } => {
                 assert_eq!(*in_reply_to, 1);
                 assert_eq!(messages.as_ref().unwrap(), &vec![10, 20, 30]);
                 assert_eq!(*value, None);
@@ -256,7 +273,7 @@ mod tests {
     fn test_broadcast_node_handles_multiple_broadcasts() {
         let mut handler = SingleNodeBroadcastNode::new();
         let mut node = Node::new();
-        
+
         // Initialize node with one peer to simplify testing
         node.handle_init("n1".to_string(), vec!["n1".to_string(), "n2".to_string()]);
 
@@ -309,7 +326,7 @@ mod tests {
     fn test_broadcast_node_ignores_unknown_messages() {
         let mut handler = SingleNodeBroadcastNode::new();
         let mut node = Node::new();
-        
+
         let unknown_message = Message {
             src: "c1".to_string(),
             dest: "n1".to_string(),
@@ -325,7 +342,7 @@ mod tests {
     fn test_broadcast_node_with_no_peers() {
         let mut handler = SingleNodeBroadcastNode::new();
         let mut node = Node::new();
-        
+
         // Initialize node with no peers
         node.handle_init("n1".to_string(), vec!["n1".to_string()]);
 
@@ -343,7 +360,10 @@ mod tests {
         // Should only have BroadcastOk response (no peer broadcasts)
         assert_eq!(responses.len(), 1);
         match &responses[0].body {
-            MessageBody::BroadcastOk { msg_id: _, in_reply_to } => {
+            MessageBody::BroadcastOk {
+                msg_id: _,
+                in_reply_to,
+            } => {
                 assert_eq!(*in_reply_to, 1);
             }
             _ => panic!("Expected BroadcastOk message"),
@@ -357,7 +377,7 @@ mod tests {
     fn test_broadcast_node_read_when_empty() {
         let mut handler = SingleNodeBroadcastNode::new();
         let mut node = Node::new();
-        
+
         // Initialize node
         node.handle_init("n1".to_string(), vec!["n1".to_string()]);
 
@@ -382,7 +402,7 @@ mod tests {
     fn test_broadcast_node_generates_unique_msg_ids() {
         let mut handler = SingleNodeBroadcastNode::new();
         let mut node = Node::new();
-        
+
         // Initialize node with one peer
         node.handle_init("n1".to_string(), vec!["n1".to_string(), "n2".to_string()]);
 

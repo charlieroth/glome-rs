@@ -95,7 +95,7 @@ mod tests {
         let mut node = TatNode::new();
         let txn = vec![("r".to_string(), 1, None)];
         let results = node.process_txn(txn);
-        
+
         assert_eq!(results.len(), 1);
         assert_eq!(results[0], ("r".to_string(), 1, None));
     }
@@ -105,7 +105,7 @@ mod tests {
         let mut node = TatNode::new();
         let txn = vec![("w".to_string(), 1, Some(42))];
         let results = node.process_txn(txn);
-        
+
         assert_eq!(results.len(), 1);
         assert_eq!(results[0], ("w".to_string(), 1, Some(42)));
         assert_eq!(node.entries.get(&1), Some(&Some(42)));
@@ -114,12 +114,9 @@ mod tests {
     #[test]
     fn test_process_txn_write_then_read() {
         let mut node = TatNode::new();
-        let txn = vec![
-            ("w".to_string(), 1, Some(42)),
-            ("r".to_string(), 1, None),
-        ];
+        let txn = vec![("w".to_string(), 1, Some(42)), ("r".to_string(), 1, None)];
         let results = node.process_txn(txn);
-        
+
         assert_eq!(results.len(), 2);
         assert_eq!(results[0], ("w".to_string(), 1, Some(42)));
         assert_eq!(results[1], ("r".to_string(), 1, Some(42)));
@@ -130,7 +127,7 @@ mod tests {
         let mut node = TatNode::new();
         let txn = vec![("w".to_string(), 1, None)];
         let results = node.process_txn(txn);
-        
+
         assert_eq!(results.len(), 1);
         assert_eq!(results[0], ("w".to_string(), 1, None));
         assert_eq!(node.entries.get(&1), Some(&None));
@@ -145,7 +142,7 @@ mod tests {
             ("r".to_string(), 1, None),
         ];
         let results = node.process_txn(txn);
-        
+
         assert_eq!(results.len(), 3);
         assert_eq!(results[0], ("w".to_string(), 1, Some(42)));
         assert_eq!(results[1], ("w".to_string(), 1, Some(99)));
@@ -163,7 +160,7 @@ mod tests {
             ("r".to_string(), 3, None),
         ];
         let results = node.process_txn(txn);
-        
+
         assert_eq!(results.len(), 5);
         assert_eq!(results[0], ("w".to_string(), 1, Some(10)));
         assert_eq!(results[1], ("w".to_string(), 2, Some(20)));
@@ -176,7 +173,7 @@ mod tests {
     fn test_handle_init_message() {
         let mut handler = TatNode::new();
         let mut node = Node::new();
-        
+
         let init_message = Message {
             src: "c1".to_string(),
             dest: "n1".to_string(),
@@ -203,19 +200,16 @@ mod tests {
     fn test_handle_txn_message() {
         let mut handler = TatNode::new();
         let mut node = Node::new();
-        
+
         // Initialize the node first
         node.handle_init("n1".to_string(), vec!["n1".to_string(), "n2".to_string()]);
-        
+
         let txn_message = Message {
             src: "c1".to_string(),
             dest: "n1".to_string(),
             body: MessageBody::Txn {
                 msg_id: 1,
-                txn: vec![
-                    ("w".to_string(), 1, Some(42)),
-                    ("r".to_string(), 1, None),
-                ],
+                txn: vec![("w".to_string(), 1, Some(42)), ("r".to_string(), 1, None)],
             },
         };
 
@@ -224,7 +218,10 @@ mod tests {
         assert_eq!(responses.len(), 1);
         assert_eq!(responses[0].src, "n1");
         assert_eq!(responses[0].dest, "c1");
-        if let MessageBody::TxnOk { in_reply_to, txn, .. } = &responses[0].body {
+        if let MessageBody::TxnOk {
+            in_reply_to, txn, ..
+        } = &responses[0].body
+        {
             assert_eq!(*in_reply_to, 1);
             assert_eq!(txn.len(), 2);
             assert_eq!(txn[0], ("w".to_string(), 1, Some(42)));
@@ -238,7 +235,7 @@ mod tests {
     fn test_handle_unknown_message() {
         let mut handler = TatNode::new();
         let mut node = Node::new();
-        
+
         let echo_message = Message {
             src: "c1".to_string(),
             dest: "n1".to_string(),

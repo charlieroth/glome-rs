@@ -95,7 +95,7 @@ mod tests {
     fn test_kafka_node_handles_init_message() {
         let mut handler = KafkaNode::new();
         let mut node = Node::new();
-        
+
         let init_message = Message {
             src: "c1".to_string(),
             dest: "n1".to_string(),
@@ -111,9 +111,12 @@ mod tests {
         assert_eq!(responses.len(), 1);
         assert_eq!(responses[0].src, "n1");
         assert_eq!(responses[0].dest, "c1");
-        
+
         match &responses[0].body {
-            MessageBody::InitOk { msg_id: _, in_reply_to } => {
+            MessageBody::InitOk {
+                msg_id: _,
+                in_reply_to,
+            } => {
                 assert_eq!(*in_reply_to, 1);
             }
             _ => panic!("Expected InitOk message"),
@@ -128,7 +131,7 @@ mod tests {
     fn test_kafka_node_handles_send_message() {
         let mut handler = KafkaNode::new();
         let mut node = Node::new();
-        
+
         // Initialize node first
         node.handle_init("n1".to_string(), vec!["n1".to_string()]);
 
@@ -147,9 +150,13 @@ mod tests {
         assert_eq!(responses.len(), 1);
         assert_eq!(responses[0].src, "n1");
         assert_eq!(responses[0].dest, "c1");
-        
+
         match &responses[0].body {
-            MessageBody::SendOk { msg_id: _, in_reply_to, offset } => {
+            MessageBody::SendOk {
+                msg_id: _,
+                in_reply_to,
+                offset,
+            } => {
                 assert_eq!(*in_reply_to, 42);
                 assert_eq!(*offset, 0); // First message should have offset 0
             }
@@ -161,7 +168,7 @@ mod tests {
     fn test_kafka_node_handles_multiple_send_messages() {
         let mut handler = KafkaNode::new();
         let mut node = Node::new();
-        
+
         // Initialize node first
         node.handle_init("n1".to_string(), vec!["n1".to_string()]);
 
@@ -224,7 +231,7 @@ mod tests {
     fn test_kafka_node_handles_poll_message() {
         let mut handler = KafkaNode::new();
         let mut node = Node::new();
-        
+
         // Initialize node first
         node.handle_init("n1".to_string(), vec!["n1".to_string()]);
 
@@ -271,20 +278,24 @@ mod tests {
         assert_eq!(responses.len(), 1);
         assert_eq!(responses[0].src, "n1");
         assert_eq!(responses[0].dest, "c1");
-        
+
         match &responses[0].body {
-            MessageBody::PollOk { msg_id: _, in_reply_to, msgs } => {
+            MessageBody::PollOk {
+                msg_id: _,
+                in_reply_to,
+                msgs,
+            } => {
                 assert_eq!(*in_reply_to, 10);
                 assert!(msgs.contains_key("k1"));
                 assert!(msgs.contains_key("k2"));
-                
+
                 // Check that we got the messages back
                 let k1_msgs = &msgs["k1"];
                 let k2_msgs = &msgs["k2"];
-                
+
                 assert_eq!(k1_msgs.len(), 1);
                 assert_eq!(k1_msgs[0], (0, 123));
-                
+
                 assert_eq!(k2_msgs.len(), 1);
                 assert_eq!(k2_msgs[0], (0, 456));
             }
@@ -296,7 +307,7 @@ mod tests {
     fn test_kafka_node_handles_commit_offsets_message() {
         let mut handler = KafkaNode::new();
         let mut node = Node::new();
-        
+
         // Initialize node first
         node.handle_init("n1".to_string(), vec!["n1".to_string()]);
 
@@ -318,9 +329,12 @@ mod tests {
         assert_eq!(responses.len(), 1);
         assert_eq!(responses[0].src, "n1");
         assert_eq!(responses[0].dest, "c1");
-        
+
         match &responses[0].body {
-            MessageBody::CommitOffsetsOk { msg_id: _, in_reply_to } => {
+            MessageBody::CommitOffsetsOk {
+                msg_id: _,
+                in_reply_to,
+            } => {
                 assert_eq!(*in_reply_to, 42);
             }
             _ => panic!("Expected CommitOffsetsOk message"),
@@ -331,7 +345,7 @@ mod tests {
     fn test_kafka_node_handles_list_committed_offsets_message() {
         let mut handler = KafkaNode::new();
         let mut node = Node::new();
-        
+
         // Initialize node first
         node.handle_init("n1".to_string(), vec!["n1".to_string()]);
 
@@ -390,9 +404,13 @@ mod tests {
         assert_eq!(responses.len(), 1);
         assert_eq!(responses[0].src, "n1");
         assert_eq!(responses[0].dest, "c1");
-        
+
         match &responses[0].body {
-            MessageBody::ListCommittedOffsetsOk { msg_id: _, in_reply_to, offsets } => {
+            MessageBody::ListCommittedOffsetsOk {
+                msg_id: _,
+                in_reply_to,
+                offsets,
+            } => {
                 assert_eq!(*in_reply_to, 10);
                 assert_eq!(offsets.get("k1"), Some(&0));
                 assert_eq!(offsets.get("k2"), Some(&0));
@@ -407,7 +425,7 @@ mod tests {
     fn test_kafka_node_ignores_unknown_messages() {
         let mut handler = KafkaNode::new();
         let mut node = Node::new();
-        
+
         let unknown_message = Message {
             src: "c1".to_string(),
             dest: "n1".to_string(),
@@ -423,7 +441,7 @@ mod tests {
     fn test_kafka_node_generates_unique_msg_ids() {
         let mut handler = KafkaNode::new();
         let mut node = Node::new();
-        
+
         // Initialize node first
         node.handle_init("n1".to_string(), vec!["n1".to_string()]);
 
@@ -459,7 +477,7 @@ mod tests {
     fn test_kafka_node_full_workflow() {
         let mut handler = KafkaNode::new();
         let mut node = Node::new();
-        
+
         // Initialize node
         node.handle_init("n1".to_string(), vec!["n1".to_string()]);
 
@@ -491,7 +509,7 @@ mod tests {
         };
 
         let poll_responses = handler.handle(&mut node, poll_message);
-        
+
         match &poll_responses[0].body {
             MessageBody::PollOk { msgs, .. } => {
                 let test_key_msgs = &msgs["test-key"];
@@ -529,7 +547,7 @@ mod tests {
         };
 
         let list_responses = handler.handle(&mut node, list_message);
-        
+
         match &list_responses[0].body {
             MessageBody::ListCommittedOffsetsOk { offsets, .. } => {
                 assert_eq!(offsets.get("test-key"), Some(&2));
