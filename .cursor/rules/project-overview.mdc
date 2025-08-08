@@ -1,0 +1,39 @@
+---
+alwaysApply: true
+---
+# Workspace Overview
+
+- `glome-rs` is a Rust workspace solving Fly.io Gossip Glomers using a shared core library `maelstrom`.
+- Binaries live in per-challenge crates; each `src/main.rs` constructs a handler and calls the unified runtime.
+
+## Core
+
+- Message protocol and enums: [maelstrom/src/lib.rs](mdc:maelstrom/src/lib.rs)
+- Node runtime, IDs, and helpers: [maelstrom/src/node.rs](mdc:maelstrom/src/node.rs)
+- Workspace members: [Cargo.toml](mdc:Cargo.toml)
+
+## Entry Pattern (per binary crate)
+
+- Typical main: construct handler, run it under Tokio:
+
+```rust
+#[tokio::main]
+async fn main() {
+    let handler = /* crate::node::YourNode::new() */;
+    maelstrom::run_node(handler).await;
+}
+```
+
+See example: [single_node_broadcast/src/main.rs](mdc:single_node_broadcast/src/main.rs)
+
+## Adding a new challenge crate
+
+- Create a new crate directory with `src/lib.rs`, `src/node.rs`, `src/main.rs`.
+- Implement a handler that implements `maelstrom::MessageHandler`.
+- Add the crate name to the root workspace members in [Cargo.toml](mdc:Cargo.toml).
+
+## Useful references
+
+- Rich end-to-end tests and patterns: [multi_node_kafka/src/node.rs](mdc:multi_node_kafka/src/node.rs)
+- Project commands and targets: [README.md](mdc:README.md)
+

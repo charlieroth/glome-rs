@@ -1,0 +1,25 @@
+---
+globs: **/*.rs
+description: Rust code conventions for this workspace
+---
+# Rust Conventions
+
+- Prefer explicit, readable names over abbreviations; avoid 1–2 char identifiers.
+- Implement `Default` when `new()` returns a zeroed/empty state.
+- Use early returns and guard clauses; keep match arms exhaustive and explicit.
+- Derive `Debug, Clone, Serialize, Deserialize` on protocol types where appropriate.
+- Use `#[serde(tag = "type", rename_all = "snake_case")]` for externally-encoded enums.
+- For async binaries, prefer `#[tokio::main]` and drive IO via the shared `run_node`.
+- Avoid inline comments; place brief comments above complex logic blocks.
+- Unit tests live beside code with `#[cfg(test)] mod tests { ... }` and should validate protocol behavior.
+
+## Error handling
+
+- For stdout protocol output, handle serialization errors by logging to stderr and continue.
+- For stdin decode errors, log and continue reading lines.
+
+## Messaging helpers (expected usage)
+
+- Use `Node::next_msg_id()` for monotonic msg IDs.
+- Use `Node::init_ok()` and `Node::reply()` to construct responses.
+

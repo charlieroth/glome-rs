@@ -1,0 +1,34 @@
+---
+description: How to build, test, and run challenges in this workspace
+---
+# Build, Test, and Run
+
+## Cargo
+
+- Build everything: `cargo build --workspace`
+- Build one crate: `cargo build -p <crate>` (e.g., `-p echo`)
+- Test everything: `cargo test --workspace`
+- Test one crate: `cargo test -p <crate>`
+- Format/lint: `cargo fmt` then `cargo clippy`
+
+## Binaries
+
+- Standard pattern:
+
+```rust
+#[tokio::main]
+async fn main() {
+    let handler = crate::node::YourNode::new();
+    maelstrom::run_node(handler).await;
+}
+```
+
+## Maelstrom via Makefile
+
+- Common targets (see [README.md](mdc:README.md)):
+  - `make echoer`
+  - `make unique-id`
+  - `make mnb` (multi-node broadcast)
+  - `make goc` (grow-only counter)
+  - `make sn-kafka`, `make mn-kafka`
+

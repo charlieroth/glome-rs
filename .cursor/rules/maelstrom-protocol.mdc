@@ -1,0 +1,26 @@
+---
+alwaysApply: false
+description: Quick reference for Maelstrom message protocol in this repo
+---
+# Maelstrom Protocol Cheatsheet
+
+Message types live in [maelstrom/src/lib.rs](mdc:maelstrom/src/lib.rs) as `MessageBody` with Serde tagging.
+
+Key variants and replies (non-exhaustive):
+
+- Init: `Init { msg_id, node_id, node_ids }` → `InitOk { in_reply_to }` and call `Node::handle_init`.
+- Echo: `Echo { msg_id, echo }` → `EchoOk { in_reply_to, echo }`.
+- Broadcast: `Broadcast`, `BroadcastOk`, `BroadcastGossip`, `Read`, `ReadOk { messages }`, `Topology`, `TopologyOk`.
+- GCounter: `Add`, `AddOk`, `CounterGossip`.
+- Kafka: `Send`, `SendOk { offset }`, `ForwardSend`, `Replicate`, `ReplicateOk`, `Poll`, `PollOk { msgs }`, `CommitOffsets`, `CommitOffsetsOk`, `ListCommittedOffsets`, `ListCommittedOffsetsOk { offsets }`.
+- Txns: `Txn`, `TxnOk`, `TarutReplicate`, `TarctReplicate`.
+- Errors: `Error { code, text?, extra? }` with `ErrorCode` variants.
+
+Guidelines:
+
+- Increment IDs with `Node::next_msg_id()` for every outbound message.
+- Use `Node::reply(dest, MessageBody::...)` to set `src` automatically from node state.
+- When not leader, forward client operations to the elected leader where applicable (see Kafka).
+
+Good end-to-end patterns: [multi_node_kafka/src/node.rs](mdc:multi_node_kafka/src/node.rs)
+
