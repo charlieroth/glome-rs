@@ -1,4 +1,5 @@
 use crate::{Message, MessageBody};
+use std::io::Write as _;
 use tokio::{
     io::{self, AsyncBufReadExt, BufReader},
     sync::mpsc,
@@ -90,8 +91,17 @@ pub async fn run_node<H: MessageHandler>(mut handler: H) {
     // Message processing loop
     while let Some(msg) = rx.recv().await {
         for response in handler.handle(&mut node, msg) {
-            let response_str = serde_json::to_string(&response).unwrap();
-            println!("{response_str}");
+            match serde_json::to_vec(&response) {
+                Ok(mut bytes) => {
+                    bytes.push(b'\n');
+                    if let Err(e) = std::io::stdout().write_all(&bytes) {
+                        eprintln!("stdout write error: {e:?} for response: {:?}", response);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("serialize error: {e:?} for response: {:?}", response);
+                }
+            }
         }
     }
 }

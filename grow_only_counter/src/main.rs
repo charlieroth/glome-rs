@@ -3,6 +3,7 @@ use maelstrom::{
     Message,
     node::{MessageHandler, Node},
 };
+use std::io::Write as _;
 use tokio::{
     io::{self, AsyncBufReadExt, BufReader},
     sync::mpsc,
@@ -33,14 +34,32 @@ async fn main() {
             _ = gossip_timer.tick() => {
                 let msgs = handler.gossip(&mut node);
                 for msg in msgs {
-                    let response_str = serde_json::to_string(&msg).unwrap();
-                    println!("{response_str}");
+                    match serde_json::to_vec(&msg) {
+                        Ok(mut bytes) => {
+                            bytes.push(b'\n');
+                            if let Err(e) = std::io::stdout().write_all(&bytes) {
+                                eprintln!("stdout write error: {e:?} for response: {:?}", msg);
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("serialize error: {e:?} for response: {:?}", msg);
+                        }
+                    }
                 }
             }
             Some(msg) = rx.recv() => {
                 for response in handler.handle(&mut node, msg) {
-                    let response_str = serde_json::to_string(&response).unwrap();
-                    println!("{response_str}");
+                    match serde_json::to_vec(&response) {
+                        Ok(mut bytes) => {
+                            bytes.push(b'\n');
+                            if let Err(e) = std::io::stdout().write_all(&bytes) {
+                                eprintln!("stdout write error: {e:?} for response: {:?}", response);
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("serialize error: {e:?} for response: {:?}", response);
+                        }
+                    }
                 }
             }
         }
