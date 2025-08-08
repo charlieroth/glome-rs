@@ -82,8 +82,15 @@ pub async fn run_node<H: MessageHandler>(mut handler: H) {
         let reader = BufReader::new(io::stdin());
         let mut lines = reader.lines();
         while let Ok(Some(line)) = lines.next_line().await {
-            if let Ok(msg) = serde_json::from_str::<Message>(&line) {
-                let _ = stdin_tx.send(msg).await;
+            match serde_json::from_str::<Message>(&line) {
+                Ok(msg) => {
+                    if stdin_tx.send(msg).await.is_err() {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    eprintln!("decode error: {e:?} line={line}");
+                }
             }
         }
     });
