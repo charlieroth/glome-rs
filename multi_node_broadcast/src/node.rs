@@ -3,13 +3,15 @@ use maelstrom::{
     node::{MessageHandler, Node},
 };
 use rand::seq::SliceRandom;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 pub struct MultiNodeBroadcastNode {
     /// Node messages
     messages: HashSet<u64>,
     /// Gossip neighbors (k-regular topology)
     gossip_peers: Vec<String>,
+    /// For each peer, the set of message ids we believe that peer already has
+    peer_seen: HashMap<String, HashSet<u64>>,
 }
 
 impl Default for MultiNodeBroadcastNode {
@@ -23,6 +25,7 @@ impl MultiNodeBroadcastNode {
         Self {
             messages: HashSet::new(),
             gossip_peers: Vec::new(),
+            peer_seen: HashMap::new(),
         }
     }
 
@@ -40,28 +43,42 @@ impl MultiNodeBroadcastNode {
         other_nodes.into_iter().take(k.min(len)).collect()
     }
 
-    pub fn gossip(&self, node: &mut Node) -> Vec<Message> {
+    pub fn gossip(&mut self, node: &mut Node) -> Vec<Message> {
         let mut out: Vec<Message> = Vec::new();
         if node.id.is_empty() || self.gossip_peers.is_empty() || self.messages.is_empty() {
             return out;
         }
 
         for peer in self.gossip_peers.iter() {
-            out.push(Message {
-                src: node.id.clone(),
-                dest: peer.clone(),
-                body: MessageBody::BroadcastGossip {
-                    msg_id: node.next_msg_id(),
-                    messages: self.messages.iter().cloned().collect(),
-                },
-            });
+            // Compute delta: what we have that we do not believe the peer has
+            let seen = self.peer_seen.entry(peer.clone()).or_default();
+            let delta: Vec<u64> = self
+                .messages
+                .iter()
+                .copied()
+                .filter(|m| !seen.contains(m))
+                .take(1024)
+                .collect();
+
+            if !delta.is_empty() {
+                out.push(Message {
+                    src: node.id.clone(),
+                    dest: peer.clone(),
+                    body: MessageBody::BroadcastGossip {
+                        msg_id: node.next_msg_id(),
+                        messages: delta,
+                    },
+                });
+            }
         }
         out
     }
 
-    pub fn handle_broadcast_gossip(&mut self, messages: Vec<u64>) {
+    pub fn handle_broadcast_gossip_from(&mut self, peer: &str, messages: Vec<u64>) {
+        let seen = self.peer_seen.entry(peer.to_string()).or_default();
         for message in messages {
             self.messages.insert(message);
+            seen.insert(message);
         }
     }
 
@@ -115,7 +132,7 @@ impl MessageHandler for MultiNodeBroadcastNode {
                 msg_id: _,
                 messages,
             } => {
-                self.handle_broadcast_gossip(messages);
+                self.handle_broadcast_gossip_from(&msg.src, messages);
             }
             MessageBody::Read { msg_id } => {
                 let messages = self.handle_read();
@@ -381,7 +398,7 @@ mod tests {
 
     #[test]
     fn test_gossip_method_with_empty_state() {
-        let handler = MultiNodeBroadcastNode::new();
+        let mut handler = MultiNodeBroadcastNode::new();
         let mut node = Node::new();
 
         // Test with empty node id
