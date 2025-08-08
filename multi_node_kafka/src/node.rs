@@ -3,12 +3,14 @@ use maelstrom::{
     Message, MessageBody,
     node::{MessageHandler, Node},
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub struct Pending {
     client: String,
     client_msg_id: u64,
     acks: usize,
+    /// Set of replica node IDs that have acked this offset (seeded with leader)
+    from: HashSet<String>,
 }
 
 pub struct KafkaNode {
@@ -79,6 +81,7 @@ impl KafkaNode {
                     client: message.src.clone(),
                     client_msg_id: msg_id,
                     acks: 1,
+                    from: HashSet::from([node.id.clone()]),
                 },
             );
             let peers = node.peers.clone();
@@ -172,27 +175,29 @@ impl MessageHandler for KafkaNode {
             } => {
                 // Grab quorum once, before get_mut()
                 let quorum = self.quorum(node);
-                // Mutably borrow the pending entry and bump acks
+                // Mutably borrow the pending entry and bump acks only on first ack from this src
                 if let Some(p) = self.pendings.get_mut(&offset) {
-                    p.acks += 1;
-                    // Check against the pre-computed quorum
-                    if p.acks >= quorum {
-                        // Take ownership of the Pending so we drop the &mut borrow
-                        let Pending {
-                            client,
-                            client_msg_id,
-                            ..
-                        } = self.pendings.remove(&offset).unwrap();
-                        // Now safe to immutably borrow `self` to build the response
-                        let reply_msg_id = node.next_msg_id();
-                        out.push(node.reply(
-                            client,
-                            MessageBody::SendOk {
-                                msg_id: reply_msg_id,
-                                in_reply_to: client_msg_id,
-                                offset,
-                            },
-                        ));
+                    if p.from.insert(message.src.clone()) {
+                        p.acks += 1;
+                        // Check against the pre-computed quorum
+                        if p.acks >= quorum {
+                            // Take ownership of the Pending so we drop the &mut borrow
+                            let Pending {
+                                client,
+                                client_msg_id,
+                                ..
+                            } = self.pendings.remove(&offset).unwrap();
+                            // Now safe to immutably borrow `self` to build the response
+                            let reply_msg_id = node.next_msg_id();
+                            out.push(node.reply(
+                                client,
+                                MessageBody::SendOk {
+                                    msg_id: reply_msg_id,
+                                    in_reply_to: client_msg_id,
+                                    offset,
+                                },
+                            ));
+                        }
                     }
                 }
             }
@@ -240,7 +245,7 @@ impl MessageHandler for KafkaNode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
 
     #[test]
     fn test_kafka_node_handles_init_message() {
@@ -590,6 +595,7 @@ mod tests {
                 client: "c1".to_string(),
                 client_msg_id: 42,
                 acks: 1, // Leader already counted as 1 ack
+                from: HashSet::from([node.id.clone()]),
             },
         );
 
@@ -652,6 +658,7 @@ mod tests {
                 client: "c1".to_string(),
                 client_msg_id: 42,
                 acks: 1, // Leader already counted as 1 ack
+                from: HashSet::from([node.id.clone()]),
             },
         );
 

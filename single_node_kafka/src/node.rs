@@ -3,10 +3,13 @@ use maelstrom::{
     Message, MessageBody,
     node::{MessageHandler, Node},
 };
+use std::collections::HashMap;
 
 pub struct KafkaNode {
     /// Append-only logs
     logs: Logs,
+    /// Deduplicate client Send retries: map (client_id, client_msg_id) -> offset
+    send_dedupe: HashMap<(String, u64), u64>,
 }
 
 impl Default for KafkaNode {
@@ -17,7 +20,10 @@ impl Default for KafkaNode {
 
 impl KafkaNode {
     pub fn new() -> Self {
-        Self { logs: Logs::new() }
+        Self {
+            logs: Logs::new(),
+            send_dedupe: HashMap::new(),
+        }
     }
 }
 
@@ -34,7 +40,15 @@ impl MessageHandler for KafkaNode {
                 out.push(node.init_ok(message.src, msg_id));
             }
             MessageBody::Send { msg_id, key, msg } => {
-                let offset = self.logs.append(&key, msg);
+                // Deduplicate client retries by (src, msg_id)
+                let dedupe_key = (message.src.clone(), msg_id);
+                let offset = if let Some(&off) = self.send_dedupe.get(&dedupe_key) {
+                    off
+                } else {
+                    let off = self.logs.append(&key, msg);
+                    self.send_dedupe.insert(dedupe_key, off);
+                    off
+                };
                 let reply_msg_id = node.next_msg_id();
                 out.push(node.reply(
                     message.src,
