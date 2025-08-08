@@ -155,7 +155,7 @@ pub enum MessageBody {
     },
     TarutReplicate {
         msg_id: u64,
-        txn: Vec<(String, u64, Option<u64>)>,
+        txn: Vec<(String, u64, Option<u64>, u64)>,
     },
     TarctReplicate {
         msg_id: u64,

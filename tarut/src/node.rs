@@ -7,6 +7,10 @@ use std::collections::HashMap;
 pub struct TarutNode {
     /// Key-value store to process cluster transactions
     entries: HashMap<u64, Option<u64>>,
+    /// Last-writer-wins version per key
+    versions: HashMap<u64, u64>,
+    /// Logical clock for assigning versions to local writes
+    commit_ts: u64,
 }
 
 impl Default for TarutNode {
@@ -19,6 +23,8 @@ impl TarutNode {
     pub fn new() -> Self {
         Self {
             entries: HashMap::new(),
+            versions: HashMap::new(),
+            commit_ts: 0,
         }
     }
 
@@ -53,19 +59,39 @@ impl TarutNode {
         let mut out: Vec<Message> = Vec::new();
         // Apply read+write ops locally
         let results = self.process_txn(txn.clone());
-        // Broadcast *only* writes to each peer
-        let write_ops: Vec<_> = txn.into_iter().filter(|(op, _, _)| op == "w").collect();
+        // Broadcast *only* writes to each peer with a LWW version
+        let mut write_ops: Vec<_> = txn.into_iter().filter(|(op, _, _)| op == "w").collect();
 
-        let peers = node.peers.clone();
-        for peer in &peers {
-            out.push(Message {
-                src: node.id.clone(),
-                dest: peer.clone(),
-                body: MessageBody::TarutReplicate {
-                    msg_id: node.next_msg_id(),
-                    txn: write_ops.clone(),
-                },
-            })
+        if !write_ops.is_empty() {
+            // assign a single commit version to all writes in this txn
+            self.commit_ts += 1;
+            let this_version = self.commit_ts;
+
+            // install versions locally (entries were already written by process_txn)
+            for (_, key, _) in write_ops.iter() {
+                self.versions.insert(*key, this_version);
+            }
+
+            // sort by key for deterministic replication order
+            write_ops.sort_by_key(|(_, key, _)| *key);
+
+            // map to (op,key,val,version)
+            let replicate_ops: Vec<(String, u64, Option<u64>, u64)> = write_ops
+                .iter()
+                .map(|(op, key, val)| (op.clone(), *key, *val, this_version))
+                .collect();
+
+            let peers = node.peers.clone();
+            for peer in &peers {
+                out.push(Message {
+                    src: node.id.clone(),
+                    dest: peer.clone(),
+                    body: MessageBody::TarutReplicate {
+                        msg_id: node.next_msg_id(),
+                        txn: replicate_ops.clone(),
+                    },
+                })
+            }
         }
 
         // reply to client immediately
@@ -100,9 +126,16 @@ impl MessageHandler for TarutNode {
                 out.extend(messages);
             }
             MessageBody::TarutReplicate { txn, .. } => {
-                // idempotently apply peer-originated writes,
-                // but do not rebroadcast them
-                self.process_txn(txn);
+                // Apply peer-originated writes with LWW versioning
+                for (op, key, val, version) in txn.into_iter() {
+                    if op == "w" {
+                        let current_version = *self.versions.get(&key).unwrap_or(&0);
+                        if version > current_version {
+                            self.entries.insert(key, val);
+                            self.versions.insert(key, version);
+                        }
+                    }
+                }
             }
             _ => {}
         }
@@ -120,12 +153,16 @@ mod tests {
     fn test_tarut_node_new() {
         let node = TarutNode::new();
         assert!(node.entries.is_empty());
+        assert!(node.versions.is_empty());
+        assert_eq!(node.commit_ts, 0);
     }
 
     #[test]
     fn test_tarut_node_default() {
         let node = TarutNode::default();
         assert!(node.entries.is_empty());
+        assert!(node.versions.is_empty());
+        assert_eq!(node.commit_ts, 0);
     }
 
     #[test]
@@ -267,6 +304,18 @@ mod tests {
             .collect();
         assert_eq!(replicate_msgs.len(), 2);
 
+        // Ensure replicated tuples include version and are sorted by key
+        for msg in replicate_msgs.iter() {
+            if let MessageBody::TarutReplicate { txn, .. } = &msg.body {
+                assert_eq!(txn.len(), 2); // two writes
+                assert_eq!(txn[0].0, "w");
+                assert_eq!(txn[1].0, "w");
+                assert!(txn[0].3 >= 1);
+                assert!(txn[1].3 >= 1);
+                assert!(txn[0].1 <= txn[1].1);
+            }
+        }
+
         // Check TxnOk message to client
         let txn_ok_msgs: Vec<_> = out_messages
             .iter()
@@ -322,7 +371,10 @@ mod tests {
 
         if let MessageBody::TarutReplicate { txn, .. } = &replicate_msgs[0].body {
             assert_eq!(txn.len(), 1);
-            assert_eq!(txn[0], ("w".to_string(), 2, Some(99)));
+            assert_eq!(txn[0].0, "w".to_string());
+            assert_eq!(txn[0].1, 2);
+            assert_eq!(txn[0].2, Some(99));
+            assert!(txn[0].3 >= 1);
         } else {
             panic!("Expected TarutReplicate message");
         }
@@ -396,7 +448,7 @@ mod tests {
             dest: "node1".to_string(),
             body: MessageBody::TarutReplicate {
                 msg_id: 1,
-                txn: vec![("w".to_string(), 1, Some(42))],
+                txn: vec![("w".to_string(), 1, Some(42), 5)],
             },
         };
 
@@ -407,6 +459,7 @@ mod tests {
 
         // But should apply the transaction locally
         assert_eq!(tarut_node.entries.get(&1), Some(&Some(42)));
+        assert_eq!(tarut_node.versions.get(&1), Some(&5));
     }
 
     #[test]
