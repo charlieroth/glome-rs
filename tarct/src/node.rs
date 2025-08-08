@@ -1,11 +1,11 @@
-use maelstrom::{ErrorCode, Message, MessageBody, MessageHandler, Node};
+use maelstrom::{ErrorCode, Message, MessageBody, MessageHandler, Node, Version};
 use std::collections::HashMap;
 
 pub struct KV {
     /// Committed values: key -> optional value
     entries: HashMap<u64, Option<u64>>,
-    /// Version (commit timestamp) of the last write for each key
-    versions: HashMap<u64, u64>,
+    /// Last-writer-wins version per key (Lamport ts, node id hash)
+    versions: HashMap<u64, Version>,
 }
 
 impl Default for KV {
@@ -23,19 +23,21 @@ impl KV {
     }
 
     /// Retrieves the committed value for a given key
-    /// Returns `None` if th ekey is not present or has been deleted
+    /// Returns `None` if the key is not present or has been deleted
     pub fn get(&self, key: &u64) -> Option<u64> {
         self.entries.get(key).cloned().unwrap_or(None)
     }
 
-    /// Retrieves the commit timestamp (version) for a given key
-    /// Returns 0 if the key is not present
-    pub fn version(&self, key: &u64) -> u64 {
-        *self.versions.get(key).unwrap_or(&0)
+    /// Retrieves the version tuple for a given key (defaults to ts=0, node=0)
+    pub fn version(&self, key: &u64) -> Version {
+        *self
+            .versions
+            .get(key)
+            .unwrap_or(&Version { ts: 0, node: 0 })
     }
 
     /// Applies a committed write to the store
-    pub fn apply(&mut self, key: u64, val: Option<u64>, version: u64) {
+    pub fn apply(&mut self, key: u64, val: Option<u64>, version: Version) {
         let current_version = self.version(&key);
         if version > current_version {
             self.entries.insert(key, val);
@@ -43,18 +45,31 @@ impl KV {
         }
     }
 
-    pub fn merge_batch(&mut self, writes: Vec<(u64, Option<u64>, u64)>) {
+    pub fn merge_batch(&mut self, writes: Vec<(u64, Option<u64>, Version)>) {
         for (key, val, version) in writes {
             self.apply(key, val, version)
         }
     }
 }
 
+/// Deterministic 64-bit hash for node IDs used to break ties in version ordering
+fn stable_hash(input: &str) -> u64 {
+    // 64-bit FNV-1a
+    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x100000001b3;
+    let mut hash = FNV_OFFSET;
+    for byte in input.as_bytes() {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
+}
+
 pub struct TarctNode {
     /// Committed key-value store with version tracking
     kv: KV,
     /// Logical clock for local commits
-    commit_ts: u64,
+    lamport_ts: u64,
 }
 
 impl Default for TarctNode {
@@ -67,7 +82,7 @@ impl TarctNode {
     pub fn new() -> Self {
         Self {
             kv: KV::new(),
-            commit_ts: 0,
+            lamport_ts: 0,
         }
     }
 
@@ -81,7 +96,7 @@ impl TarctNode {
         let mut out: Vec<Message> = Vec::new();
 
         // stage read-set and write-set
-        let mut read_set: HashMap<u64, u64> = HashMap::new();
+        let mut read_set: HashMap<u64, Version> = HashMap::new();
         let mut write_set: HashMap<u64, Option<u64>> = HashMap::new();
         let mut results = Vec::with_capacity(txn.len());
 
@@ -129,18 +144,33 @@ impl TarctNode {
 
         // Only commit if there are writes
         if !write_set.is_empty() {
-            // commit: bump local clock and install writes
-            self.commit_ts += 1;
-            let this_ts = self.commit_ts;
+            // Update Lamport clock based on any observed versions in this txn
+            let max_observed_ts = read_set
+                .values()
+                .map(|v| v.ts)
+                .max()
+                .unwrap_or(self.lamport_ts);
+            if max_observed_ts > self.lamport_ts {
+                self.lamport_ts = max_observed_ts;
+            }
+            self.lamport_ts += 1;
+
+            // Stable node hash for tie-breakers
+            let node_hash = stable_hash(&node.id);
+            let this_version = Version {
+                ts: self.lamport_ts,
+                node: node_hash,
+            };
+
             for (&key, &val) in write_set.iter() {
-                self.kv.apply(key, val, this_ts);
+                self.kv.apply(key, val, this_version);
             }
 
             // gossip the committed writes (including version) to all peers
             // prepare batch: ("w", key, val, version) - sort by key for deterministic order
-            let mut replicate_ops: Vec<(String, u64, Option<u64>, u64)> = write_set
+            let mut replicate_ops: Vec<(String, u64, Option<u64>, Version)> = write_set
                 .iter()
-                .map(|(&key, &val)| ("w".to_string(), key, val, this_ts))
+                .map(|(&key, &val)| ("w".to_string(), key, val, this_version))
                 .collect();
             replicate_ops.sort_by_key(|(_, key, _, _)| *key);
 
@@ -192,6 +222,12 @@ impl MessageHandler for TarctNode {
                 msg_id: _,
                 txn: batch,
             } => {
+                // Advance Lamport based on observed versions
+                for (_, _, _, v) in batch.iter() {
+                    if v.ts > self.lamport_ts {
+                        self.lamport_ts = v.ts;
+                    }
+                }
                 let writes = batch
                     .iter()
                     .filter(|(op, _, _, _)| op == "w")
@@ -232,101 +268,105 @@ mod tests {
     #[test]
     fn test_kv_version_nonexistent_key() {
         let kv = KV::new();
-        assert_eq!(kv.version(&1), 0);
+        assert_eq!(kv.version(&1).ts, 0);
     }
 
     #[test]
     fn test_kv_apply_new_key() {
         let mut kv = KV::new();
-        kv.apply(1, Some(42), 1);
+        kv.apply(1, Some(42), Version { ts: 1, node: 0 });
 
         assert_eq!(kv.get(&1), Some(42));
-        assert_eq!(kv.version(&1), 1);
+        assert_eq!(kv.version(&1).ts, 1);
     }
 
     #[test]
     fn test_kv_apply_newer_version() {
         let mut kv = KV::new();
-        kv.apply(1, Some(42), 1);
-        kv.apply(1, Some(99), 2);
+        kv.apply(1, Some(42), Version { ts: 1, node: 0 });
+        kv.apply(1, Some(99), Version { ts: 2, node: 0 });
 
         assert_eq!(kv.get(&1), Some(99));
-        assert_eq!(kv.version(&1), 2);
+        assert_eq!(kv.version(&1).ts, 2);
     }
 
     #[test]
     fn test_kv_apply_older_version_ignored() {
         let mut kv = KV::new();
-        kv.apply(1, Some(42), 2);
-        kv.apply(1, Some(99), 1); // older version, should be ignored
+        kv.apply(1, Some(42), Version { ts: 2, node: 0 });
+        kv.apply(1, Some(99), Version { ts: 1, node: 0 }); // older version, should be ignored
 
         assert_eq!(kv.get(&1), Some(42));
-        assert_eq!(kv.version(&1), 2);
+        assert_eq!(kv.version(&1).ts, 2);
     }
 
     #[test]
     fn test_kv_apply_same_version_ignored() {
         let mut kv = KV::new();
-        kv.apply(1, Some(42), 1);
-        kv.apply(1, Some(99), 1); // same version, should be ignored
+        kv.apply(1, Some(42), Version { ts: 1, node: 0 });
+        kv.apply(1, Some(99), Version { ts: 1, node: 0 }); // same version, should be ignored
 
         assert_eq!(kv.get(&1), Some(42));
-        assert_eq!(kv.version(&1), 1);
+        assert_eq!(kv.version(&1).ts, 1);
     }
 
     #[test]
     fn test_kv_apply_null_value() {
         let mut kv = KV::new();
-        kv.apply(1, None, 1);
+        kv.apply(1, None, Version { ts: 1, node: 0 });
 
         assert_eq!(kv.get(&1), None);
-        assert_eq!(kv.version(&1), 1);
+        assert_eq!(kv.version(&1).ts, 1);
     }
 
     #[test]
     fn test_kv_merge_batch() {
         let mut kv = KV::new();
-        let writes = vec![(1, Some(10), 1), (2, Some(20), 1), (3, None, 1)];
+        let writes = vec![
+            (1, Some(10), Version { ts: 1, node: 0 }),
+            (2, Some(20), Version { ts: 1, node: 0 }),
+            (3, None, Version { ts: 1, node: 0 }),
+        ];
 
         kv.merge_batch(writes);
 
         assert_eq!(kv.get(&1), Some(10));
         assert_eq!(kv.get(&2), Some(20));
         assert_eq!(kv.get(&3), None);
-        assert_eq!(kv.version(&1), 1);
-        assert_eq!(kv.version(&2), 1);
-        assert_eq!(kv.version(&3), 1);
+        assert_eq!(kv.version(&1).ts, 1);
+        assert_eq!(kv.version(&2).ts, 1);
+        assert_eq!(kv.version(&3).ts, 1);
     }
 
     #[test]
     fn test_kv_merge_batch_with_version_conflicts() {
         let mut kv = KV::new();
-        kv.apply(1, Some(42), 3);
+        kv.apply(1, Some(42), Version { ts: 3, node: 0 });
 
         let writes = vec![
-            (1, Some(10), 1), // older version, should be ignored
-            (1, Some(20), 4), // newer version, should be applied
-            (2, Some(99), 2),
+            (1, Some(10), Version { ts: 1, node: 0 }), // older version, should be ignored
+            (1, Some(20), Version { ts: 4, node: 0 }), // newer version, should be applied
+            (2, Some(99), Version { ts: 2, node: 0 }),
         ];
 
         kv.merge_batch(writes);
 
         assert_eq!(kv.get(&1), Some(20));
         assert_eq!(kv.get(&2), Some(99));
-        assert_eq!(kv.version(&1), 4);
-        assert_eq!(kv.version(&2), 2);
+        assert_eq!(kv.version(&1).ts, 4);
+        assert_eq!(kv.version(&2).ts, 2);
     }
 
     #[test]
     fn test_tarct_node_new() {
         let node = TarctNode::new();
-        assert_eq!(node.commit_ts, 0);
+        assert_eq!(node.lamport_ts, 0);
     }
 
     #[test]
     fn test_tarct_node_default() {
         let node = TarctNode::default();
-        assert_eq!(node.commit_ts, 0);
+        assert_eq!(node.lamport_ts, 0);
     }
 
     #[test]
@@ -364,8 +404,8 @@ mod tests {
             panic!("Expected TxnOk message");
         }
 
-        // Commit timestamp should not advance for read-only transaction
-        assert_eq!(tarct_node.commit_ts, 0);
+        // Lamport timestamp should not advance for read-only transaction
+        assert_eq!(tarct_node.lamport_ts, 0);
     }
 
     #[test]
@@ -411,12 +451,12 @@ mod tests {
 
         assert_eq!(replicate_msg.dest, "node2");
 
-        // Commit timestamp should advance
-        assert_eq!(tarct_node.commit_ts, 1);
+        // Lamport timestamp should advance
+        assert_eq!(tarct_node.lamport_ts, 1);
 
         // KV should have the committed value
         assert_eq!(tarct_node.kv.get(&1), Some(42));
-        assert_eq!(tarct_node.kv.version(&1), 1);
+        assert_eq!(tarct_node.kv.version(&1).ts, 1);
     }
 
     #[test]
@@ -429,7 +469,9 @@ mod tests {
         );
 
         // Set up initial state
-        tarct_node.kv.apply(1, Some(100), 5);
+        tarct_node
+            .kv
+            .apply(1, Some(100), Version { ts: 5, node: 0 });
 
         let message = Message {
             src: "client".to_string(),
@@ -552,9 +594,13 @@ mod tests {
 
         if let MessageBody::TarctReplicate { txn, .. } = &replicate_msg.body {
             assert_eq!(txn.len(), 3);
-            assert_eq!(txn[0], ("w".to_string(), 1, Some(10), 1));
-            assert_eq!(txn[1], ("w".to_string(), 2, Some(20), 1));
-            assert_eq!(txn[2], ("w".to_string(), 3, None, 1));
+            let expected_v = Version {
+                ts: 1,
+                node: stable_hash(&node.id),
+            };
+            assert_eq!(txn[0], ("w".to_string(), 1, Some(10), expected_v));
+            assert_eq!(txn[1], ("w".to_string(), 2, Some(20), expected_v));
+            assert_eq!(txn[2], ("w".to_string(), 3, None, expected_v));
         }
     }
 
@@ -673,8 +719,8 @@ mod tests {
             body: MessageBody::TarctReplicate {
                 msg_id: 1,
                 txn: vec![
-                    ("w".to_string(), 1, Some(42), 5),
-                    ("w".to_string(), 2, None, 5),
+                    ("w".to_string(), 1, Some(42), Version { ts: 5, node: 0 }),
+                    ("w".to_string(), 2, None, Version { ts: 5, node: 0 }),
                 ],
             },
         };
@@ -687,8 +733,8 @@ mod tests {
         // But should apply the writes locally
         assert_eq!(tarct_node.kv.get(&1), Some(42));
         assert_eq!(tarct_node.kv.get(&2), None);
-        assert_eq!(tarct_node.kv.version(&1), 5);
-        assert_eq!(tarct_node.kv.version(&2), 5);
+        assert_eq!(tarct_node.kv.version(&1).ts, 5);
+        assert_eq!(tarct_node.kv.version(&2).ts, 5);
     }
 
     #[test]
@@ -702,9 +748,9 @@ mod tests {
             body: MessageBody::TarctReplicate {
                 msg_id: 1,
                 txn: vec![
-                    ("w".to_string(), 1, Some(42), 5),
-                    ("r".to_string(), 2, None, 0), // should be filtered out
-                    ("w".to_string(), 3, Some(99), 5),
+                    ("w".to_string(), 1, Some(42), Version { ts: 5, node: 0 }),
+                    ("r".to_string(), 2, None, Version { ts: 0, node: 0 }), // should be filtered out
+                    ("w".to_string(), 3, Some(99), Version { ts: 5, node: 0 }),
                 ],
             },
         };
@@ -717,7 +763,7 @@ mod tests {
         assert_eq!(tarct_node.kv.get(&1), Some(42));
         assert_eq!(tarct_node.kv.get(&2), None); // not written
         assert_eq!(tarct_node.kv.get(&3), Some(99));
-        assert_eq!(tarct_node.kv.version(&2), 0); // not written
+        assert_eq!(tarct_node.kv.version(&2).ts, 0); // not written
     }
 
     #[test]
@@ -761,19 +807,19 @@ mod tests {
         // First transaction with writes
         let txn1 = vec![("w".to_string(), 1, Some(10))];
         tarct_node.handle_tx(&mut node, message.clone(), 1, txn1);
-        assert_eq!(tarct_node.commit_ts, 1);
-        assert_eq!(tarct_node.kv.version(&1), 1);
+        assert_eq!(tarct_node.lamport_ts, 1);
+        assert_eq!(tarct_node.kv.version(&1).ts, 1);
 
         // Second transaction with writes
         let txn2 = vec![("w".to_string(), 2, Some(20))];
         tarct_node.handle_tx(&mut node, message.clone(), 2, txn2);
-        assert_eq!(tarct_node.commit_ts, 2);
-        assert_eq!(tarct_node.kv.version(&2), 2);
+        assert_eq!(tarct_node.lamport_ts, 2);
+        assert_eq!(tarct_node.kv.version(&2).ts, 2);
 
         // Read-only transaction should not advance timestamp
         let txn3 = vec![("r".to_string(), 1, None)];
         tarct_node.handle_tx(&mut node, message, 3, txn3);
-        assert_eq!(tarct_node.commit_ts, 2); // unchanged
+        assert_eq!(tarct_node.lamport_ts, 2); // unchanged
     }
 
     #[test]
@@ -781,13 +827,13 @@ mod tests {
         let mut kv = KV::new();
 
         // Apply writes out of order
-        kv.apply(1, Some(30), 3);
-        kv.apply(1, Some(10), 1); // older, should be ignored
-        kv.apply(1, Some(20), 2); // older, should be ignored
-        kv.apply(1, Some(40), 4); // newer, should be applied
+        kv.apply(1, Some(30), Version { ts: 3, node: 0 });
+        kv.apply(1, Some(10), Version { ts: 1, node: 0 }); // older, should be ignored
+        kv.apply(1, Some(20), Version { ts: 2, node: 0 }); // older, should be ignored
+        kv.apply(1, Some(40), Version { ts: 4, node: 0 }); // newer, should be applied
 
         assert_eq!(kv.get(&1), Some(40));
-        assert_eq!(kv.version(&1), 4);
+        assert_eq!(kv.version(&1).ts, 4);
     }
 
     #[test]
@@ -798,8 +844,10 @@ mod tests {
 
         // Set up initial committed state with a value at version 1
         // We'll have a transaction commit writes with version 2
-        tarct_node.kv.apply(1, Some(100), 1);
-        tarct_node.commit_ts = 1; // Set commit_ts so next transaction will use version 2
+        tarct_node
+            .kv
+            .apply(1, Some(100), Version { ts: 1, node: 0 });
+        tarct_node.lamport_ts = 1; // Set Lamport so next transaction will use version 2
 
         let message = Message {
             src: "client".to_string(),
@@ -835,7 +883,7 @@ mod tests {
         // After commit, both values should be visible
         assert_eq!(tarct_node.kv.get(&1), Some(200));
         assert_eq!(tarct_node.kv.get(&2), Some(300));
-        assert_eq!(tarct_node.kv.version(&1), 2);
-        assert_eq!(tarct_node.kv.version(&2), 2);
+        assert_eq!(tarct_node.kv.version(&1).ts, 2);
+        assert_eq!(tarct_node.kv.version(&2).ts, 2);
     }
 }

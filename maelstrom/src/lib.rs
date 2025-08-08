@@ -10,6 +10,12 @@ pub mod simple_log;
 // Re-export key types from modules
 pub use node::{MessageHandler, Node, run_node};
 
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Serialize, Deserialize)]
+pub struct Version {
+    pub ts: u64,
+    pub node: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
     pub src: String,
@@ -159,7 +165,7 @@ pub enum MessageBody {
     },
     TarctReplicate {
         msg_id: u64,
-        txn: Vec<(String, u64, Option<u64>, u64)>,
+        txn: Vec<(String, u64, Option<u64>, Version)>,
     },
     Error {
         msg_id: u64,
