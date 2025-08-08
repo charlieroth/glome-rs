@@ -2,10 +2,13 @@ use maelstrom::{
     Message, MessageBody,
     node::{MessageHandler, Node},
 };
+use std::collections::HashSet;
 
 pub struct SingleNodeBroadcastNode {
     /// Node messages
     messages: Vec<u64>,
+    /// Fast membership test to avoid duplicate inserts
+    seen: HashSet<u64>,
 }
 
 impl Default for SingleNodeBroadcastNode {
@@ -18,13 +21,19 @@ impl SingleNodeBroadcastNode {
     pub fn new() -> Self {
         Self {
             messages: Vec::new(),
+            seen: HashSet::new(),
         }
     }
 
     pub fn handle_broadcast(&mut self, node: &mut Node, message: u64) -> Vec<Message> {
         let mut out: Vec<Message> = Vec::new();
-        self.messages.push(message);
+        if self.seen.insert(message) {
+            self.messages.push(message);
+        }
         for peer in node.peers.clone() {
+            if peer == node.id {
+                continue;
+            }
             out.push(Message {
                 src: node.id.clone(),
                 dest: peer,
